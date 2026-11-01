@@ -1,6 +1,7 @@
-# Generate Wayland client glue with wayland-scanner. ext-foreign-toplevel-list
-# is generated from the start because ext-image-capture-source's glue
-# references ext_foreign_toplevel_handle_v1_interface.
+# Generate Wayland client glue with wayland-scanner. Some XMLs are here only
+# because another one's glue references their interfaces:
+# ext-foreign-toplevel-list (ext-image-capture-source), tablet-v2
+# (cursor-shape) and xdg-shell (wlr-layer-shell).
 
 wl_protocol_dir = wayland_protos.get_variable('pkgdatadir')
 
@@ -9,6 +10,12 @@ protocols = [
 	wl_protocol_dir / 'staging' / 'ext-image-capture-source' / 'ext-image-capture-source-v1.xml',
 	wl_protocol_dir / 'staging' / 'ext-foreign-toplevel-list' / 'ext-foreign-toplevel-list-v1.xml',
 	wl_protocol_dir / 'staging' / 'ext-data-control' / 'ext-data-control-v1.xml',
+	wl_protocol_dir / 'stable' / 'viewporter' / 'viewporter.xml',
+	wl_protocol_dir / 'staging' / 'single-pixel-buffer' / 'single-pixel-buffer-v1.xml',
+	wl_protocol_dir / 'staging' / 'cursor-shape' / 'cursor-shape-v1.xml',
+	wl_protocol_dir / 'stable' / 'tablet' / 'tablet-v2.xml',
+	wl_protocol_dir / 'stable' / 'xdg-shell' / 'xdg-shell.xml',
+	meson.current_source_dir() / 'wlr-layer-shell-unstable-v1.xml',
 ]
 
 protocol_src = []
