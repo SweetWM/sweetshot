@@ -12,8 +12,11 @@ project(
 # memfd_create, O_TMPFILE, linkat and the wider POSIX surface
 add_project_arguments('-D_GNU_SOURCE', language: 'c')
 
+fs = import('fs')
+
 wayland_client = dependency('wayland-client')
 wayland_protos = dependency('wayland-protocols')
+zlib = dependency('zlib')
 
 wayland_scanner_dep = dependency('wayland-scanner', native: true)
 wayland_scanner = find_program(
@@ -23,6 +26,8 @@ wayland_scanner = find_program(
 
 subdir('protocol')
 
+sweetshot_inc = include_directories('src')
+
 executable(
 	'sweetshot',
 	'src/main.c',
@@ -31,3 +36,8 @@ executable(
 	dependencies: [wayland_client, sweetshot_protocols_dep],
 	install: true,
 )
+
+# tests
+if fs.exists('tests/meson.build')
+	subdir('tests')
+endif
