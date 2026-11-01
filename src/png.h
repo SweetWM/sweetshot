@@ -20,4 +20,7 @@ struct png_image {
 
 bool png_encode(const struct png_image *img, uint8_t **out, size_t *len);
 
+struct png_image png_upright(
+	const struct png_image *img, uint32_t transform, uint8_t *dst);
+
 #endif

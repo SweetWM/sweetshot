@@ -162,3 +162,61 @@ out:
 	free(buf);
 	return ok;
 }
+
+struct png_image png_upright(
+	const struct png_image *img, uint32_t transform, uint8_t *dst) {
+	size_t w = img->width;
+	size_t h = img->height;
+	// odd values are 90, 270, flipped-90 and flipped-270
+	bool swap = transform & 1;
+	size_t ow = swap ? h : w;
+	for (size_t y = 0; y < h; y++) {
+		const uint8_t *row = img->data + y * img->stride;
+		for (size_t x = 0; x < w; x++) {
+			size_t ox;
+			size_t oy;
+			switch (transform) {
+			case 1: // 90
+				ox = h - 1 - y;
+				oy = x;
+				break;
+			case 2: // 180
+				ox = w - 1 - x;
+				oy = h - 1 - y;
+				break;
+			case 3: // 270
+				ox = y;
+				oy = w - 1 - x;
+				break;
+			case 4: // flipped
+				ox = w - 1 - x;
+				oy = y;
+				break;
+			case 5: // flipped-90
+				ox = y;
+				oy = x;
+				break;
+			case 6: // flipped-180
+				ox = x;
+				oy = h - 1 - y;
+				break;
+			case 7: // flipped-270
+				ox = h - 1 - y;
+				oy = w - 1 - x;
+				break;
+			default:
+				ox = x;
+				oy = y;
+				break;
+			}
+			memcpy(dst + (oy * ow + ox) * 4, row + x * 4, 4);
+		}
+	}
+	return (struct png_image){
+		.width = (uint32_t)ow,
+		.height = (uint32_t)(swap ? w : h),
+		.stride = ow * 4,
+		.format = img->format,
+		.data = dst,
+	};
+}
