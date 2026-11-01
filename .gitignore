@@ -1,6 +1,8 @@
 # Meson build dirs
 /build*/
 
+/tests/
+
 compile_commands.json
 .cache/
 
