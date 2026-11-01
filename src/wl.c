@@ -1,9 +1,13 @@
 #include "wl.h"
 
+#include "cursor-shape-v1-client-protocol.h"
 #include "ext-data-control-v1-client-protocol.h"
 #include "ext-image-capture-source-v1-client-protocol.h"
 #include "ext-image-copy-capture-v1-client-protocol.h"
 #include "log.h"
+#include "single-pixel-buffer-v1-client-protocol.h"
+#include "viewporter-client-protocol.h"
+#include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -82,6 +86,21 @@ static void add_output(struct conn *c, uint32_t name) {
 	wl_list_insert(c->outputs.prev, &o->link);
 }
 
+static void seat_capabilities(void *data, struct wl_seat *seat, uint32_t caps) {
+	(void)seat;
+	struct conn *c = data;
+	c->seat_caps = caps;
+}
+
+static void seat_name(void *data, struct wl_seat *seat, const char *name) {
+	(void)data, (void)seat, (void)name;
+}
+
+static const struct wl_seat_listener seat_listener = {
+	.capabilities = seat_capabilities,
+	.name = seat_name,
+};
+
 static bool is(const char *iface, const struct wl_interface *want) {
 	return strcmp(iface, want->name) == 0;
 }
@@ -98,6 +117,10 @@ static void registry_global(void *data, struct wl_registry *registry,
 		&ext_foreign_toplevel_image_capture_source_manager_v1_interface;
 	const struct wl_interface *data_control =
 		&ext_data_control_manager_v1_interface;
+	const struct wl_interface *single_pixel =
+		&wp_single_pixel_buffer_manager_v1_interface;
+	const struct wl_interface *cursor_shape =
+		&wp_cursor_shape_manager_v1_interface;
 
 	if (is(iface, &wl_shm_interface) && !c->shm) {
 		c->shm = bind_global(c, name, &wl_shm_interface, 1);
@@ -111,10 +134,34 @@ static void registry_global(void *data, struct wl_registry *registry,
 	} else if (is(iface, toplevel_source) && !c->toplevel_source) {
 		c->toplevel_source = bind_global(c, name, toplevel_source, 1);
 	} else if (is(iface, &wl_seat_interface) && !c->seat) {
-		// v1: only a get_data_device argument so far
-		c->seat = bind_global(c, name, &wl_seat_interface, 1);
+		// v5: release; later versions add nothing the selector uses
+		c->seat = bind_global(
+			c, name, &wl_seat_interface, version < 5 ? version : 5);
+		if (c->seat) {
+			wl_seat_add_listener(c->seat, &seat_listener, c);
+		}
 	} else if (is(iface, data_control) && !c->data_control) {
 		c->data_control = bind_global(c, name, data_control, 1);
+	} else if (is(iface, &wl_compositor_interface) && version >= 4 &&
+		   !c->compositor) {
+		// v4: wl_surface.damage_buffer
+		c->compositor =
+			bind_global(c, name, &wl_compositor_interface, 4);
+	} else if (is(iface, &wl_subcompositor_interface) &&
+		   !c->subcompositor) {
+		c->subcompositor =
+			bind_global(c, name, &wl_subcompositor_interface, 1);
+	} else if (is(iface, &wp_viewporter_interface) && !c->viewporter) {
+		c->viewporter =
+			bind_global(c, name, &wp_viewporter_interface, 1);
+	} else if (is(iface, single_pixel) && !c->single_pixel) {
+		c->single_pixel = bind_global(c, name, single_pixel, 1);
+	} else if (is(iface, &zwlr_layer_shell_v1_interface) &&
+		   !c->layer_shell) {
+		c->layer_shell =
+			bind_global(c, name, &zwlr_layer_shell_v1_interface, 1);
+	} else if (is(iface, cursor_shape) && !c->cursor_shape) {
+		c->cursor_shape = bind_global(c, name, cursor_shape, 1);
 	}
 }
 
@@ -181,11 +228,30 @@ fail:
 }
 
 void conn_finish(struct conn *c) {
+	if (c->cursor_shape) {
+		wp_cursor_shape_manager_v1_destroy(c->cursor_shape);
+	}
+	if (c->layer_shell) {
+		zwlr_layer_shell_v1_destroy(c->layer_shell);
+	}
+	if (c->single_pixel) {
+		wp_single_pixel_buffer_manager_v1_destroy(c->single_pixel);
+	}
+	if (c->viewporter) {
+		wp_viewporter_destroy(c->viewporter);
+	}
+	if (c->subcompositor) {
+		wl_subcompositor_destroy(c->subcompositor);
+	}
+	if (c->compositor) {
+		wl_compositor_destroy(c->compositor);
+	}
 	if (c->data_control) {
 		ext_data_control_manager_v1_destroy(c->data_control);
 	}
-	if (c->seat) {
-		// wl_seat.release needs v5
+	if (c->seat && wl_seat_get_version(c->seat) >= 5) {
+		wl_seat_release(c->seat);
+	} else if (c->seat) {
 		wl_seat_destroy(c->seat);
 	}
 	if (c->toplevel_source) {
@@ -239,6 +305,21 @@ static bool has(const struct conn *c, const struct wl_interface *iface) {
 	}
 	if (iface == &ext_data_control_manager_v1_interface) {
 		return c->data_control;
+	}
+	if (iface == &wl_compositor_interface) {
+		return c->compositor;
+	}
+	if (iface == &wl_subcompositor_interface) {
+		return c->subcompositor;
+	}
+	if (iface == &wp_viewporter_interface) {
+		return c->viewporter;
+	}
+	if (iface == &wp_single_pixel_buffer_manager_v1_interface) {
+		return c->single_pixel;
+	}
+	if (iface == &zwlr_layer_shell_v1_interface) {
+		return c->layer_shell;
 	}
 	return false;
 }

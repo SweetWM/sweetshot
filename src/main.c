@@ -7,18 +7,35 @@
 #include "log.h"
 #include "png.h"
 #include "save.h"
+#include "select.h"
+#include "single-pixel-buffer-v1-client-protocol.h"
+#include "viewporter-client-protocol.h"
 #include "wl.h"
+#include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-// region is output capture plus a crop, so it needs what output needs
 static const struct wl_interface *const output_needs[] = {
 	&wl_shm_interface,
 	&wl_output_interface,
 	&ext_image_copy_capture_manager_v1_interface,
 	&ext_output_image_capture_source_manager_v1_interface,
+	NULL,
+};
+
+static const struct wl_interface *const region_needs[] = {
+	&wl_shm_interface,
+	&wl_output_interface,
+	&ext_image_copy_capture_manager_v1_interface,
+	&ext_output_image_capture_source_manager_v1_interface,
+	&wl_seat_interface,
+	&wl_compositor_interface,
+	&wl_subcompositor_interface,
+	&wp_viewporter_interface,
+	&wp_single_pixel_buffer_manager_v1_interface,
+	&zwlr_layer_shell_v1_interface,
 	NULL,
 };
 
@@ -56,9 +73,16 @@ static struct output *find_output(struct conn *c, const char *name) {
 	return NULL;
 }
 
-// finds the output, captures and encodes, the caller frees *png. Returns an
-// exit status
-static int shoot(
+// encodes `img`, after freeing the capture, so the clipboard child holds only
+// PNG bytes. Returns an exit status
+static int encode(struct shot *shot, const struct png_image *img, uint8_t **png,
+	size_t *len) {
+	bool ok = png_encode(img, png, len);
+	shot_finish(shot);
+	return ok ? 0 : 1;
+}
+
+static int shoot_output(
 	struct conn *c, const struct args *a, uint8_t **png, size_t *len) {
 	struct output *o = find_output(c, a->name);
 	if (!o) {
@@ -68,10 +92,35 @@ static int shoot(
 	if (!capture_output(c, o, a->cursor, &shot)) {
 		return 1;
 	}
-	bool encoded = png_encode(&shot.image, png, len);
-	// freed before the clipboard fork, so the child holds only PNG bytes
-	shot_finish(&shot);
-	return encoded ? 0 : 1;
+	return encode(&shot, &shot.image, png, len);
+}
+
+// region is output capture plus a crop of what the selector left undimmed
+static int shoot_region(
+	struct conn *c, const struct args *a, uint8_t **png, size_t *len) {
+	struct selector *s = select_create(c, a->cursor);
+	if (!s) {
+		return 1;
+	}
+	struct choice ch;
+	enum select_result r = select_run(s, &ch);
+	if (r != SELECT_CONFIRMED) {
+		select_destroy(s);
+		return r == SELECT_CANCELLED ? 3 : 1;
+	}
+	struct shot shot;
+	bool ok = capture_output(c, ch.output, ch.cursor, &shot);
+	select_destroy(s);
+	if (!ok) {
+		return 1;
+	}
+	struct png_image img = shot.image;
+	struct rect px = rect_physical(
+		ch.rect, ch.width, ch.height, img.width, img.height);
+	img.data += (size_t)px.y * img.stride + (size_t)px.x * 4;
+	img.width = (uint32_t)px.w;
+	img.height = (uint32_t)px.h;
+	return encode(&shot, &img, png, len);
 }
 
 int main(int argc, char **argv) {
@@ -103,8 +152,12 @@ int main(int argc, char **argv) {
 	int status = 1;
 	uint8_t *png = NULL;
 	size_t len = 0;
-	bool window = a.cmd == CMD_WINDOW;
-	if (!conn_require(&conn, window ? window_needs : output_needs)) {
+	const struct wl_interface *const *needs[] = {
+		[CMD_REGION] = region_needs,
+		[CMD_OUTPUT] = output_needs,
+		[CMD_WINDOW] = window_needs,
+	};
+	if (!conn_require(&conn, needs[a.cmd])) {
 		goto out;
 	}
 	// with the clipboard as the only destination, nothing is worth
@@ -112,12 +165,12 @@ int main(int argc, char **argv) {
 	if (a.clip && !a.file && !conn_require(&conn, clip_needs)) {
 		goto out;
 	}
-	if (a.cmd != CMD_OUTPUT) {
-		log_error("%s: not implemented yet",
-			window ? "window" : "region");
+	if (a.cmd == CMD_WINDOW) {
+		log_error("window: not implemented yet");
 		goto out;
 	}
-	status = shoot(&conn, &a, &png, &len);
+	status = a.cmd == CMD_REGION ? shoot_region(&conn, &a, &png, &len)
+				     : shoot_output(&conn, &a, &png, &len);
 	if (status != 0) {
 		goto out;
 	}
