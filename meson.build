@@ -12,8 +12,22 @@ project(
 # memfd_create, O_TMPFILE, linkat and the wider POSIX surface
 add_project_arguments('-D_GNU_SOURCE', language: 'c')
 
+wayland_client = dependency('wayland-client')
+wayland_protos = dependency('wayland-protocols')
+
+wayland_scanner_dep = dependency('wayland-scanner', native: true)
+wayland_scanner = find_program(
+	wayland_scanner_dep.get_variable('wayland_scanner'),
+	native: true,
+)
+
+subdir('protocol')
+
 executable(
 	'sweetshot',
 	'src/main.c',
+	'src/log.c',
+	'src/wl.c',
+	dependencies: [wayland_client, sweetshot_protocols_dep],
 	install: true,
 )
