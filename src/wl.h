@@ -17,10 +17,12 @@ struct conn {
 	struct wl_registry *registry;
 	struct wl_shm *shm;
 	struct wl_list outputs; // struct output.link, in advertised order
+	struct wl_seat *seat;	// the first one, sweetshot never picks seats
 	struct ext_image_copy_capture_manager_v1 *capture;
 	struct ext_output_image_capture_source_manager_v1 *output_source;
 	struct ext_foreign_toplevel_image_capture_source_manager_v1
 		*toplevel_source;
+	struct ext_data_control_manager_v1 *data_control;
 	bool oom; // allocation failed inside a listener
 };
 

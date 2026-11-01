@@ -33,6 +33,7 @@ executable(
 	'src/main.c',
 	'src/capture.c',
 	'src/cli.c',
+	'src/clip.c',
 	'src/log.c',
 	'src/png.c',
 	'src/save.c',

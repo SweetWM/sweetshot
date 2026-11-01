@@ -1,5 +1,7 @@
 #include "capture.h"
 #include "cli.h"
+#include "clip.h"
+#include "ext-data-control-v1-client-protocol.h"
 #include "ext-image-capture-source-v1-client-protocol.h"
 #include "ext-image-copy-capture-v1-client-protocol.h"
 #include "log.h"
@@ -17,6 +19,12 @@ static const struct wl_interface *const output_needs[] = {
 	&wl_output_interface,
 	&ext_image_copy_capture_manager_v1_interface,
 	&ext_output_image_capture_source_manager_v1_interface,
+	NULL,
+};
+
+static const struct wl_interface *const clip_needs[] = {
+	&wl_seat_interface,
+	&ext_data_control_manager_v1_interface,
 	NULL,
 };
 
@@ -48,38 +56,22 @@ static struct output *find_output(struct conn *c, const char *name) {
 	return NULL;
 }
 
-// captures and encodes, the caller frees *png. Returns an exit status
-static int shoot(const struct args *a, uint8_t **png, size_t *len) {
-	struct conn conn;
-	if (!conn_init(&conn)) {
-		return 1;
-	}
-	int status = 1;
-	bool window = a->cmd == CMD_WINDOW;
-	if (!conn_require(&conn, window ? window_needs : output_needs)) {
-		goto out;
-	}
-	if (a->cmd != CMD_OUTPUT) {
-		log_error("%s: not implemented yet",
-			window ? "window" : "region");
-		goto out;
-	}
-	struct output *o = find_output(&conn, a->name);
+// finds the output, captures and encodes, the caller frees *png. Returns an
+// exit status
+static int shoot(
+	struct conn *c, const struct args *a, uint8_t **png, size_t *len) {
+	struct output *o = find_output(c, a->name);
 	if (!o) {
-		status = 2;
-		goto out;
+		return 2;
 	}
 	struct shot shot;
-	if (!capture_output(&conn, o, a->cursor, &shot)) {
-		goto out;
+	if (!capture_output(c, o, a->cursor, &shot)) {
+		return 1;
 	}
 	bool encoded = png_encode(&shot.image, png, len);
+	// freed before the clipboard fork, so the child holds only PNG bytes
 	shot_finish(&shot);
-	status = encoded ? 0 : 1;
-
-out:
-	conn_finish(&conn);
-	return status;
+	return encoded ? 0 : 1;
 }
 
 int main(int argc, char **argv) {
@@ -92,10 +84,6 @@ int main(int argc, char **argv) {
 	if (!cli_parse(argc, argv, &a)) {
 		return 2;
 	}
-	if (a.clip && !a.file) {
-		log_error("the clipboard is not implemented yet");
-		return 1;
-	}
 
 	// resolved before connecting, a bad environment fails before capture
 	char *owned = NULL;
@@ -106,24 +94,67 @@ int main(int argc, char **argv) {
 			return 1;
 		}
 	}
+	struct conn conn;
+	if (!conn_init(&conn)) {
+		free(owned);
+		return 1;
+	}
 
+	int status = 1;
 	uint8_t *png = NULL;
 	size_t len = 0;
-	int status = shoot(&a, &png, &len);
-	if (status == 0 && a.file) {
-		char *path = save_png(dir, png, len);
-		if (path) {
-			puts(path);
-			free(path);
-		} else {
-			status = 1;
+	bool window = a.cmd == CMD_WINDOW;
+	if (!conn_require(&conn, window ? window_needs : output_needs)) {
+		goto out;
+	}
+	// with the clipboard as the only destination, nothing is worth
+	// capturing without it
+	if (a.clip && !a.file && !conn_require(&conn, clip_needs)) {
+		goto out;
+	}
+	if (a.cmd != CMD_OUTPUT) {
+		log_error("%s: not implemented yet",
+			window ? "window" : "region");
+		goto out;
+	}
+	status = shoot(&conn, &a, &png, &len);
+	if (status != 0) {
+		goto out;
+	}
+
+	// a failed destination is reported but does not cancel the other:
+	// file first, then the clipboard, then the path on stdout
+	char *path = NULL;
+	if (a.file) {
+		path = save_png(dir, png, len);
+		status = path ? 0 : 1;
+	}
+	struct clip cl = {0};
+	bool clipped = false;
+	if (a.clip) {
+		clipped = conn_require(&conn, clip_needs) &&
+			  clip_set(&cl, &conn, png, len);
+		status = clipped ? status : 1;
+	}
+	if (path) {
+		puts(path);
+		free(path);
+	}
+	if (clipped) {
+		if (clip_serve(&cl)) {
+			// the child shares the connection, tearing it down here
+			// would drop the selection
+			free(png);
+			free(owned);
+			return status;
 		}
-	}
-	if (status == 0 && a.clip) {
-		log_error("the clipboard is not implemented yet");
 		status = 1;
+		clip_finish(&cl);
 	}
+
+out:
 	free(png);
+	conn_finish(&conn);
 	free(owned);
 	return status;
 }
