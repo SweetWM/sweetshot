@@ -1,0 +1,12 @@
+# Meson build dirs
+/build*/
+
+compile_commands.json
+.cache/
+
+core
+core.*
+
+# nix
+/result
+.direnv/
