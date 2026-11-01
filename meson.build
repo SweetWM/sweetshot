@@ -31,9 +31,13 @@ sweetshot_inc = include_directories('src')
 executable(
 	'sweetshot',
 	'src/main.c',
+	'src/capture.c',
+	'src/cli.c',
 	'src/log.c',
+	'src/png.c',
+	'src/save.c',
 	'src/wl.c',
-	dependencies: [wayland_client, sweetshot_protocols_dep],
+	dependencies: [wayland_client, zlib, sweetshot_protocols_dep],
 	install: true,
 )
 
