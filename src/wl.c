@@ -1,5 +1,6 @@
 #include "wl.h"
 
+#include "ext-data-control-v1-client-protocol.h"
 #include "ext-image-capture-source-v1-client-protocol.h"
 #include "ext-image-copy-capture-v1-client-protocol.h"
 #include "log.h"
@@ -95,6 +96,8 @@ static void registry_global(void *data, struct wl_registry *registry,
 		&ext_output_image_capture_source_manager_v1_interface;
 	const struct wl_interface *toplevel_source =
 		&ext_foreign_toplevel_image_capture_source_manager_v1_interface;
+	const struct wl_interface *data_control =
+		&ext_data_control_manager_v1_interface;
 
 	if (is(iface, &wl_shm_interface) && !c->shm) {
 		c->shm = bind_global(c, name, &wl_shm_interface, 1);
@@ -107,11 +110,16 @@ static void registry_global(void *data, struct wl_registry *registry,
 		c->output_source = bind_global(c, name, output_source, 1);
 	} else if (is(iface, toplevel_source) && !c->toplevel_source) {
 		c->toplevel_source = bind_global(c, name, toplevel_source, 1);
+	} else if (is(iface, &wl_seat_interface) && !c->seat) {
+		// v1: only a get_data_device argument so far
+		c->seat = bind_global(c, name, &wl_seat_interface, 1);
+	} else if (is(iface, data_control) && !c->data_control) {
+		c->data_control = bind_global(c, name, data_control, 1);
 	}
 }
 
 // sweetshot lives for one capture. An output unplugged meanwhile ends its
-// capture session with stoppe`, which the capture path reports
+// capture session with `stopped`, which the capture path reports
 static void registry_global_remove(
 	void *data, struct wl_registry *registry, uint32_t name) {
 	(void)data, (void)registry, (void)name;
@@ -173,6 +181,13 @@ fail:
 }
 
 void conn_finish(struct conn *c) {
+	if (c->data_control) {
+		ext_data_control_manager_v1_destroy(c->data_control);
+	}
+	if (c->seat) {
+		// wl_seat.release needs v5
+		wl_seat_destroy(c->seat);
+	}
 	if (c->toplevel_source) {
 		ext_foreign_toplevel_image_capture_source_manager_v1_destroy(
 			c->toplevel_source);
@@ -219,6 +234,12 @@ static bool has(const struct conn *c, const struct wl_interface *iface) {
 		&ext_foreign_toplevel_image_capture_source_manager_v1_interface) {
 		return c->toplevel_source;
 	}
+	if (iface == &wl_seat_interface) {
+		return c->seat;
+	}
+	if (iface == &ext_data_control_manager_v1_interface) {
+		return c->data_control;
+	}
 	return false;
 }
 
@@ -230,6 +251,9 @@ static const char *permission(const struct wl_interface *iface) {
 		iface ==
 			&ext_foreign_toplevel_image_capture_source_manager_v1_interface) {
 		return "screencopy";
+	}
+	if (iface == &ext_data_control_manager_v1_interface) {
+		return "data_control";
 	}
 	return NULL;
 }
