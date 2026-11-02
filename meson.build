@@ -34,6 +34,7 @@ executable(
 	'src/capture.c',
 	'src/cli.c',
 	'src/clip.c',
+	'src/input.c',
 	'src/log.c',
 	'src/png.c',
 	'src/rect.c',

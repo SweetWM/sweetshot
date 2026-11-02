@@ -1,6 +1,6 @@
 #include "select.h"
 
-#include "cursor-shape-v1-client-protocol.h"
+#include "input.h"
 #include "log.h"
 #include "single-pixel-buffer-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
@@ -8,7 +8,6 @@
 
 #include <linux/input-event-codes.h>
 #include <stdlib.h>
-#include <unistd.h>
 
 // a press and release closer than this, in logical px, selects the whole
 // output
@@ -52,9 +51,7 @@ struct selector {
 	struct wl_buffer *dim;
 	struct wl_buffer *white;
 	struct wl_region *no_input;
-	struct wl_pointer *pointer;
-	struct wl_keyboard *keyboard;
-	struct wp_cursor_shape_device_v1 *shape;
+	struct input *input;
 	struct overlay *hover; // under the pointer, at px, py
 	int32_t px;
 	int32_t py;
@@ -63,7 +60,6 @@ struct selector {
 	struct overlay *drag_o; // a left-button drag started here
 	int32_t drag_x;
 	int32_t drag_y;
-	bool shift[2];
 	bool cursor;
 	enum state state;
 	// taken at confirm, late input cannot change them
@@ -203,10 +199,8 @@ static int32_t clamp(int32_t v, int32_t hi) {
 	return v < 0 ? 0 : v > hi ? hi : v;
 }
 
-static void pointer_enter(void *data, struct wl_pointer *pointer,
-	uint32_t serial, struct wl_surface *surface, wl_fixed_t x,
-	wl_fixed_t y) {
-	(void)pointer;
+static void on_enter(
+	void *data, struct wl_surface *surface, wl_fixed_t x, wl_fixed_t y) {
 	struct selector *s = data;
 	s->hover = NULL;
 	for (size_t i = 0; i < s->n; i++) {
@@ -216,22 +210,14 @@ static void pointer_enter(void *data, struct wl_pointer *pointer,
 	}
 	s->px = fixed_floor(x);
 	s->py = fixed_floor(y);
-	if (s->shape) {
-		wp_cursor_shape_device_v1_set_shape(s->shape, serial,
-			WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CROSSHAIR);
-	}
 }
 
-static void pointer_leave(void *data, struct wl_pointer *pointer,
-	uint32_t serial, struct wl_surface *surface) {
-	(void)pointer, (void)serial, (void)surface;
+static void on_leave(void *data) {
 	struct selector *s = data;
 	s->hover = NULL;
 }
 
-static void pointer_motion(void *data, struct wl_pointer *pointer,
-	uint32_t time, wl_fixed_t x, wl_fixed_t y) {
-	(void)pointer, (void)time;
+static void on_motion(void *data, wl_fixed_t x, wl_fixed_t y) {
 	struct selector *s = data;
 	s->px = fixed_floor(x);
 	s->py = fixed_floor(y);
@@ -247,15 +233,13 @@ static void pointer_motion(void *data, struct wl_pointer *pointer,
 			clamp(s->py, o->h)));
 }
 
-static void pointer_button(void *data, struct wl_pointer *pointer,
-	uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
-	(void)pointer, (void)serial, (void)time;
+static void on_button(void *data, uint32_t button, bool pressed) {
 	struct selector *s = data;
 	if (button != BTN_LEFT || s->state != SELECTING) {
 		return;
 	}
 	struct overlay *o = s->hover;
-	if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+	if (pressed) {
 		if (!o || o->w == 0) {
 			return;
 		}
@@ -273,55 +257,11 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
 	}
 }
 
-static void pointer_axis(void *data, struct wl_pointer *pointer, uint32_t time,
-	uint32_t axis, wl_fixed_t value) {
-	(void)data, (void)pointer, (void)time, (void)axis, (void)value;
-}
-
-static void pointer_frame(void *data, struct wl_pointer *pointer) {
-	(void)data, (void)pointer;
-}
-
-static void pointer_axis_source(
-	void *data, struct wl_pointer *pointer, uint32_t source) {
-	(void)data, (void)pointer, (void)source;
-}
-
-static void pointer_axis_stop(
-	void *data, struct wl_pointer *pointer, uint32_t time, uint32_t axis) {
-	(void)data, (void)pointer, (void)time, (void)axis;
-}
-
-static void pointer_axis_discrete(void *data, struct wl_pointer *pointer,
-	uint32_t axis, int32_t discrete) {
-	(void)data, (void)pointer, (void)axis, (void)discrete;
-}
-
-static void pointer_axis_value120(
-	void *data, struct wl_pointer *pointer, uint32_t axis, int32_t value) {
-	(void)data, (void)pointer, (void)axis, (void)value;
-}
-
-static void pointer_axis_relative_direction(void *data,
-	struct wl_pointer *pointer, uint32_t axis, uint32_t direction) {
-	(void)data, (void)pointer, (void)axis, (void)direction;
-}
-
-static const struct wl_pointer_listener pointer_listener = {
-	.enter = pointer_enter,
-	.leave = pointer_leave,
-	.motion = pointer_motion,
-	.button = pointer_button,
-	.axis = pointer_axis,
-	.frame = pointer_frame,
-	.axis_source = pointer_axis_source,
-	.axis_stop = pointer_axis_stop,
-	.axis_discrete = pointer_axis_discrete,
-	.axis_value120 = pointer_axis_value120,
-	.axis_relative_direction = pointer_axis_relative_direction,
-};
-
-static void on_key(struct selector *s, uint32_t key) {
+static void on_key(void *data, uint32_t key, uint32_t mods) {
+	struct selector *s = data;
+	if (s->state != SELECTING) {
+		return;
+	}
 	struct overlay *o = s->sel_o;
 	int32_t dx = 0;
 	int32_t dy = 0;
@@ -372,73 +312,17 @@ static void on_key(struct selector *s, uint32_t key) {
 		return;
 	}
 	if (o) {
-		bool resize = s->shift[0] || s->shift[1];
+		bool resize = mods & INPUT_SHIFT;
 		set_sel(s, o, rect_nudge(s->sel, dx, dy, resize, o->w, o->h));
 	}
 }
 
-// raw evdev codes need no keymap
-static void keyboard_keymap(void *data, struct wl_keyboard *keyboard,
-	uint32_t format, int32_t fd, uint32_t size) {
-	(void)data, (void)keyboard, (void)format, (void)size;
-	close(fd);
-}
-
-static void keyboard_enter(void *data, struct wl_keyboard *keyboard,
-	uint32_t serial, struct wl_surface *surface, struct wl_array *keys) {
-	(void)keyboard, (void)serial, (void)surface;
-	struct selector *s = data;
-	// shift may already be down when the overlay takes focus
-	s->shift[0] = s->shift[1] = false;
-	uint32_t *k;
-	wl_array_for_each(k, keys) {
-		s->shift[0] |= *k == KEY_LEFTSHIFT;
-		s->shift[1] |= *k == KEY_RIGHTSHIFT;
-	}
-}
-
-static void keyboard_leave(void *data, struct wl_keyboard *keyboard,
-	uint32_t serial, struct wl_surface *surface) {
-	(void)keyboard, (void)serial, (void)surface;
-	struct selector *s = data;
-	s->shift[0] = s->shift[1] = false;
-}
-
-// Shift is tracked from its own key events: modifier masks are keymap
-// indices, which need xkbcommon to interpret
-static void keyboard_key(void *data, struct wl_keyboard *keyboard,
-	uint32_t serial, uint32_t time, uint32_t key, uint32_t state) {
-	(void)keyboard, (void)serial, (void)time;
-	struct selector *s = data;
-	bool pressed = state == WL_KEYBOARD_KEY_STATE_PRESSED;
-	if (key == KEY_LEFTSHIFT) {
-		s->shift[0] = pressed;
-	} else if (key == KEY_RIGHTSHIFT) {
-		s->shift[1] = pressed;
-	} else if (pressed && s->state == SELECTING) {
-		on_key(s, key);
-	}
-}
-
-static void keyboard_modifiers(void *data, struct wl_keyboard *keyboard,
-	uint32_t serial, uint32_t depressed, uint32_t latched, uint32_t locked,
-	uint32_t group) {
-	(void)data, (void)keyboard, (void)serial, (void)depressed;
-	(void)latched, (void)locked, (void)group;
-}
-
-static void keyboard_repeat_info(
-	void *data, struct wl_keyboard *keyboard, int32_t rate, int32_t delay) {
-	(void)data, (void)keyboard, (void)rate, (void)delay;
-}
-
-static const struct wl_keyboard_listener keyboard_listener = {
-	.keymap = keyboard_keymap,
-	.enter = keyboard_enter,
-	.leave = keyboard_leave,
-	.key = keyboard_key,
-	.modifiers = keyboard_modifiers,
-	.repeat_info = keyboard_repeat_info,
+static const struct input_listener input_listener = {
+	.enter = on_enter,
+	.leave = on_leave,
+	.motion = on_motion,
+	.button = on_button,
+	.key = on_key,
 };
 
 static void destroy_parts(struct overlay *o) {
@@ -529,18 +413,18 @@ static bool add_overlay(struct selector *s, const struct output *out) {
 }
 
 struct selector *select_create(struct conn *c, bool cursor) {
-	uint32_t input =
-		WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD;
-	if (!(c->seat_caps & input)) {
-		log_error("the seat has neither a pointer nor a keyboard");
-		return NULL;
-	}
 	struct selector *s = calloc(1, sizeof(*s));
 	if (!s) {
 		log_error("out of memory");
 		return NULL;
 	}
 	*s = (struct selector){.conn = c, .cursor = cursor, .state = SELECTING};
+	// reports its own error
+	s->input = input_create(c, &input_listener, s);
+	if (!s->input) {
+		select_destroy(s);
+		return NULL;
+	}
 	s->overlays = calloc(wl_list_length(&c->outputs), sizeof(*s->overlays));
 	struct wp_single_pixel_buffer_manager_v1 *sp = c->single_pixel;
 	s->clear = wp_single_pixel_buffer_manager_v1_create_u32_rgba_buffer(
@@ -559,24 +443,6 @@ struct selector *select_create(struct conn *c, bool cursor) {
 		if (!add_overlay(s, out)) {
 			goto fail;
 		}
-	}
-	if (c->seat_caps & WL_SEAT_CAPABILITY_POINTER) {
-		s->pointer = wl_seat_get_pointer(c->seat);
-		if (!s->pointer) {
-			goto fail;
-		}
-		wl_pointer_add_listener(s->pointer, &pointer_listener, s);
-		if (c->cursor_shape) {
-			s->shape = wp_cursor_shape_manager_v1_get_pointer(
-				c->cursor_shape, s->pointer);
-		}
-	}
-	if (c->seat_caps & WL_SEAT_CAPABILITY_KEYBOARD) {
-		s->keyboard = wl_seat_get_keyboard(c->seat);
-		if (!s->keyboard) {
-			goto fail;
-		}
-		wl_keyboard_add_listener(s->keyboard, &keyboard_listener, s);
 	}
 	return s;
 
@@ -642,20 +508,6 @@ void select_destroy(struct selector *s) {
 	if (!s) {
 		return;
 	}
-	// release arrived in wl_keyboard and wl_pointer v3
-	if (s->keyboard && wl_keyboard_get_version(s->keyboard) >= 3) {
-		wl_keyboard_release(s->keyboard);
-	} else if (s->keyboard) {
-		wl_keyboard_destroy(s->keyboard);
-	}
-	if (s->shape) {
-		wp_cursor_shape_device_v1_destroy(s->shape);
-	}
-	if (s->pointer && wl_pointer_get_version(s->pointer) >= 3) {
-		wl_pointer_release(s->pointer);
-	} else if (s->pointer) {
-		wl_pointer_destroy(s->pointer);
-	}
 	for (size_t i = s->n; i > 0; i--) {
 		destroy_overlay(&s->overlays[i - 1]);
 	}
@@ -672,6 +524,7 @@ void select_destroy(struct selector *s) {
 	if (s->clear) {
 		wl_buffer_destroy(s->clear);
 	}
+	input_destroy(s->input);
 	// hand keyboard focus back now, not after encoding
 	wl_display_flush(s->conn->display);
 	free(s);
