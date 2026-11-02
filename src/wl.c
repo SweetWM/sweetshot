@@ -17,14 +17,20 @@
 static void output_geometry(void *data, struct wl_output *wl, int32_t x,
 	int32_t y, int32_t phys_w, int32_t phys_h, int32_t subpixel,
 	const char *make, const char *model, int32_t transform) {
-	(void)data, (void)wl, (void)x, (void)y, (void)phys_w, (void)phys_h;
-	(void)subpixel, (void)make, (void)model, (void)transform;
+	(void)wl, (void)x, (void)y, (void)phys_w, (void)phys_h;
+	(void)subpixel, (void)make, (void)model;
+	struct output *o = data;
+	o->transform = transform;
 }
 
 static void output_mode(void *data, struct wl_output *wl, uint32_t flags,
 	int32_t width, int32_t height, int32_t refresh) {
-	(void)data, (void)wl, (void)flags, (void)width, (void)height;
-	(void)refresh;
+	(void)wl, (void)refresh;
+	struct output *o = data;
+	if (flags & WL_OUTPUT_MODE_CURRENT) {
+		o->mode_w = width;
+		o->mode_h = height;
+	}
 }
 
 static void output_done(void *data, struct wl_output *wl) {
@@ -53,7 +59,7 @@ static void output_description(
 	(void)data, (void)wl, (void)description;
 }
 
-// size, scale and transform come from the capture frame, not from wl_output
+
 static const struct wl_output_listener output_listener = {
 	.geometry = output_geometry,
 	.mode = output_mode,

@@ -17,6 +17,8 @@ fs = import('fs')
 wayland_client = dependency('wayland-client')
 wayland_protos = dependency('wayland-protocols')
 zlib = dependency('zlib')
+# sqrtf and friends for the rasterizer
+libm = meson.get_compiler('c').find_library('m', required: false)
 
 wayland_scanner_dep = dependency('wayland-scanner', native: true)
 wayland_scanner = find_program(
@@ -34,15 +36,19 @@ executable(
 	'src/capture.c',
 	'src/cli.c',
 	'src/clip.c',
+	'src/draw.c',
+	'src/edit.c',
 	'src/input.c',
 	'src/log.c',
 	'src/png.c',
+	'src/raster.c',
 	'src/rect.c',
 	'src/save.c',
 	'src/select.c',
 	'src/sweets.c',
+	'src/tool.c',
 	'src/wl.c',
-	dependencies: [wayland_client, zlib, sweetshot_protocols_dep],
+	dependencies: [wayland_client, zlib, libm, sweetshot_protocols_dep],
 	install: true,
 )
 

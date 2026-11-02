@@ -178,9 +178,18 @@ struct rect draw_bounds(const struct draw_op *op) {
 	return raster_pixels(f);
 }
 
-// blocks are anchored at the op's corner and averaged over the whole block
-// of the original capture, so the result does not depend on clip or on
-// what was drawn before
+struct raster_point draw_square(
+	struct raster_point a, struct raster_point b, float w, float h) {
+	float dx = b.x - a.x;
+	float dy = b.y - a.y;
+	float side = fmaxf(fabsf(dx), fabsf(dy));
+	side = fminf(side, dx >= 0.0f ? w - a.x : a.x);
+	side = fminf(side, dy >= 0.0f ? h - a.y : a.y);
+	side = fmaxf(side, 0.0f);
+	return (struct raster_point){a.x + (dx >= 0.0f ? side : -side),
+		a.y + (dy >= 0.0f ? side : -side)};
+}
+
 static void draw_pixelate(const struct raster *t, const struct png_image *src,
 	const struct draw_op *op, struct rect clip) {
 	struct rect area = pixelate_area(op);

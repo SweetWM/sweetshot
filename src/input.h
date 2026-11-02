@@ -3,14 +3,14 @@
 
 #include "wl.h"
 
-// modifier state passed with key presses
+// modifier state passed with key presses and mods()
 enum {
 	INPUT_SHIFT = 1,
 	INPUT_CTRL = 2,
 };
 
 // positions are surface-local logical coordinates, as the compositor sent
-// them; every callback must be set
+// them; every callback but mods must be set
 struct input_listener {
 	void (*enter)(void *data, struct wl_surface *surface, wl_fixed_t x,
 		wl_fixed_t y);
@@ -19,6 +19,8 @@ struct input_listener {
 	void (*button)(void *data, uint32_t button, bool pressed);
 	// presses of keys other than Shift and Ctrl; raw evdev codes
 	void (*key)(void *data, uint32_t key, uint32_t mods);
+	// Shift or Ctrl went down or up, or focus changed them; may be NULL
+	void (*mods)(void *data, uint32_t mods);
 };
 
 struct input;

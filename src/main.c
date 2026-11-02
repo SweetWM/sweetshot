@@ -1,6 +1,7 @@
 #include "capture.h"
 #include "cli.h"
 #include "clip.h"
+#include "edit.h"
 #include "ext-data-control-v1-client-protocol.h"
 #include "ext-foreign-toplevel-list-v1-client-protocol.h"
 #include "ext-image-capture-source-v1-client-protocol.h"
@@ -41,6 +42,19 @@ static const struct wl_interface *const region_needs[] = {
 	NULL,
 };
 
+// the editor overlay, plus the output it is shown on
+static const struct wl_interface *const edit_needs[] = {
+	&wl_shm_interface,
+	&wl_output_interface,
+	&wl_seat_interface,
+	&wl_compositor_interface,
+	&wl_subcompositor_interface,
+	&wp_viewporter_interface,
+	&wp_single_pixel_buffer_manager_v1_interface,
+	&zwlr_layer_shell_v1_interface,
+	NULL,
+};
+
 static const struct wl_interface *const clip_needs[] = {
 	&wl_seat_interface,
 	&ext_data_control_manager_v1_interface,
@@ -55,15 +69,28 @@ static const struct wl_interface *const window_needs[] = {
 	NULL,
 };
 
-static struct output *find_output(struct conn *c, const char *name) {
+static struct output *first_output(struct conn *c) {
 	struct output *o;
-	if (!name) {
-		return wl_container_of(c->outputs.next, o, link);
-	}
+	return wl_container_of(c->outputs.next, o, link);
+}
+
+static struct output *output_named(struct conn *c, const char *name) {
+	struct output *o;
 	wl_list_for_each(o, &c->outputs, link) {
-		if (strcmp(o->name, name) == 0) {
+		if (name && strcmp(o->name, name) == 0) {
 			return o;
 		}
+	}
+	return NULL;
+}
+
+static struct output *find_output(struct conn *c, const char *name) {
+	if (!name) {
+		return first_output(c);
+	}
+	struct output *o = output_named(c, name);
+	if (o) {
+		return o;
 	}
 	char list[256] = "";
 	wl_list_for_each(o, &c->outputs, link) {
@@ -76,13 +103,28 @@ static struct output *find_output(struct conn *c, const char *name) {
 	return NULL;
 }
 
-// encodes `img`, after freeing the capture, so the clipboard child holds only
+// opens the editor when `edit` is set, then encodes its result, or img, once.
+// The capture is freed before returning, so the clipboard child holds only
 // PNG bytes. Returns an exit status
-static int encode(struct shot *shot, const struct png_image *img, uint8_t **png,
-	size_t *len) {
-	bool ok = png_encode(img, png, len);
+static int encode(struct conn *c, struct shot *shot,
+	const struct png_image *img, const struct edit_input *edit,
+	uint8_t **png, size_t *len) {
+	struct png_image view = *img;
+	struct editor *e = NULL;
+	int status = 1;
+	if (edit) {
+		e = edit_create(c, edit);
+		enum edit_result r = e ? edit_run(e, &view) : EDIT_FAILED;
+		if (r != EDIT_DONE) {
+			status = r == EDIT_CANCELLED ? 3 : 1;
+			goto out;
+		}
+	}
+	status = png_encode(&view, png, len) ? 0 : 1;
+out:
+	edit_destroy(e);
 	shot_finish(shot);
-	return ok ? 0 : 1;
+	return status;
 }
 
 // without a NAME, the output of the focused window, else the first one
@@ -105,7 +147,12 @@ static int shoot_output(
 	if (!capture_output(c, o, a->cursor, &shot)) {
 		return 1;
 	}
-	return encode(&shot, &shot.image, png, len);
+	struct edit_input in = {
+		.output = o,
+		.image = shot.image,
+		.fit = EDIT_OUTPUT,
+	};
+	return encode(c, &shot, &shot.image, a->edit ? &in : NULL, png, len);
 }
 
 // the window focused when sweetshot started, a later focus change does not
@@ -128,7 +175,14 @@ static int shoot_window(
 	if (!capture_window(c, f.identifier, a->cursor, &shot)) {
 		return 1;
 	}
-	return encode(&shot, &shot.image, png, len);
+	// edited on the window's output
+	struct output *o = output_named(c, f.output);
+	struct edit_input in = {
+		.output = o ? o : first_output(c),
+		.image = shot.image,
+		.fit = EDIT_WINDOW,
+	};
+	return encode(c, &shot, &shot.image, a->edit ? &in : NULL, png, len);
 }
 
 // region is output capture plus a crop of what the selector left undimmed
@@ -156,7 +210,16 @@ static int shoot_region(
 	img.data += (size_t)px.y * img.stride + (size_t)px.x * 4;
 	img.width = (uint32_t)px.w;
 	img.height = (uint32_t)px.h;
-	return encode(&shot, &img, png, len);
+	// the editor opens on the same output, over the frozen selection
+	struct edit_input in = {
+		.output = ch.output,
+		.image = img,
+		.fit = EDIT_REGION,
+		.sel = ch.rect,
+		.full_w = shot.image.width,
+		.full_h = shot.image.height,
+	};
+	return encode(c, &shot, &img, a->edit ? &in : NULL, png, len);
 }
 
 int main(int argc, char **argv) {
@@ -193,7 +256,8 @@ int main(int argc, char **argv) {
 		[CMD_OUTPUT] = output_needs,
 		[CMD_WINDOW] = window_needs,
 	};
-	if (!conn_require(&conn, needs[a.cmd])) {
+	if (!conn_require(&conn, needs[a.cmd]) ||
+		(a.edit && !conn_require(&conn, edit_needs))) {
 		goto out;
 	}
 	// with the clipboard as the only destination, nothing is worth
