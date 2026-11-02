@@ -27,6 +27,8 @@ struct rect rect_nudge(struct rect r, int32_t dx, int32_t dy, bool resize,
 // normalized rectangle between two points, reverse drags included
 struct rect rect_span(int32_t ax, int32_t ay, int32_t bx, int32_t by);
 
+struct rect rect_intersect(struct rect a, struct rect b);
+
 // pixel rectangle of logical r in the upright iw×ih capture of an lw×lh
 // output
 struct rect rect_physical(
