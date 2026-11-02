@@ -46,8 +46,8 @@ stdenv.mkDerivation {
   mesonBuildType = "release";
 
   meta = {
-    description = "Fast screenshot tool for the Sweets Wayland compositor";
-    homepage = "https://github.com/naurissteins/sweetshot";
+    description = "Small screenshot tool for Sweets Wayland compositor";
+    homepage = "https://github.com/SweetWM/sweetshot";
     license = lib.licenses.gpl3Plus;
     mainProgram = "sweetshot";
     platforms = lib.platforms.linux;
