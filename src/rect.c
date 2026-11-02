@@ -50,6 +50,22 @@ struct rect rect_span(int32_t ax, int32_t ay, int32_t bx, int32_t by) {
 	};
 }
 
+struct rect rect_intersect(struct rect a, struct rect b) {
+	int64_t x0 = a.x > b.x ? a.x : b.x;
+	int64_t y0 = a.y > b.y ? a.y : b.y;
+	int64_t ax1 = (int64_t)a.x + a.w;
+	int64_t ay1 = (int64_t)a.y + a.h;
+	int64_t bx1 = (int64_t)b.x + b.w;
+	int64_t by1 = (int64_t)b.y + b.h;
+	int64_t x1 = ax1 < bx1 ? ax1 : bx1;
+	int64_t y1 = ay1 < by1 ? ay1 : by1;
+	if (x1 <= x0 || y1 <= y0) {
+		return (struct rect){0};
+	}
+	return (struct rect){(int32_t)x0, (int32_t)y0, (int32_t)(x1 - x0),
+		(int32_t)(y1 - y0)};
+}
+
 static int32_t scale_round(int32_t v, uint32_t pixels, int32_t logical) {
 	int64_t q =
 		(2 * (int64_t)v * pixels + logical) / (2 * (int64_t)logical);
