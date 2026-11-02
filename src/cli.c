@@ -6,10 +6,13 @@
 #include <string.h>
 
 const char cli_usage[] =
-	"usage: sweetshot region [--clip] [--file] [--dir PATH] [--cursor]\n"
-	"       sweetshot output [NAME] [--clip] [--file] [--dir PATH] "
+	"usage: sweetshot region [--edit] [--clip] [--file] [--dir PATH] "
 	"[--cursor]\n"
-	"       sweetshot window [--clip] [--file] [--dir PATH] [--cursor]\n";
+	"       sweetshot output [NAME] [--edit] [--clip] [--file] [--dir "
+	"PATH] "
+	"[--cursor]\n"
+	"       sweetshot window [--edit] [--clip] [--file] [--dir PATH] "
+	"[--cursor]\n";
 
 bool cli_parse(int argc, char **argv, struct args *a) {
 	*a = (struct args){0};
@@ -36,6 +39,8 @@ bool cli_parse(int argc, char **argv, struct args *a) {
 			a->file = true;
 		} else if (strcmp(arg, "--cursor") == 0) {
 			a->cursor = true;
+		} else if (strcmp(arg, "--edit") == 0) {
+			a->edit = true;
 		} else if (strcmp(arg, "--dir") == 0) {
 			if (++i == argc) {
 				log_error("--dir needs a value");

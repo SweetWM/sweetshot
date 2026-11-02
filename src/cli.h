@@ -16,6 +16,7 @@ struct args {
 	bool clip;
 	bool file;
 	bool cursor;
+	bool edit;
 };
 
 extern const char cli_usage[];

@@ -63,6 +63,9 @@ void draw_ops_finish(struct draw_ops *ops);
 // image
 struct rect draw_bounds(const struct draw_op *op);
 
+struct raster_point draw_square(
+	struct raster_point a, struct raster_point b, float w, float h);
+
 void draw_render(const struct png_image *src, const struct draw_op *ops,
 	size_t n, const struct draw_op *live, uint8_t *dst, size_t dst_stride,
 	struct rect clip);

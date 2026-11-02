@@ -9,6 +9,10 @@ struct output {
 	struct wl_list link; // conn.outputs
 	struct wl_output *wl;
 	char *name; // wl_output v4 name, e.g. "DP-4"; NULL until sent
+	// current mode in physical pixels, not rotated; 0 until sent
+	int32_t mode_w;
+	int32_t mode_h;
+	int32_t transform; // wl_output.transform
 };
 
 // one Wayland connection with every global sweetshot binds. Fields stay

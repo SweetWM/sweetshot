@@ -29,9 +29,26 @@ struct rect rect_span(int32_t ax, int32_t ay, int32_t bx, int32_t by);
 
 struct rect rect_intersect(struct rect a, struct rect b);
 
+// the smallest rectangle holding a and b; an empty one is ignored
+struct rect rect_union(struct rect a, struct rect b);
+
 // pixel rectangle of logical r in the upright iw×ih capture of an lw×lh
 // output
 struct rect rect_physical(
 	struct rect r, int32_t lw, int32_t lh, uint32_t iw, uint32_t ih);
+
+struct place {
+	struct rect at;
+	double sx;
+	double sy;
+	double ox;
+	double oy;
+};
+
+struct place rect_place_crop(
+	struct rect sel, int32_t lw, int32_t lh, uint32_t iw, uint32_t ih);
+
+struct place rect_place_center(uint32_t iw, uint32_t ih, int32_t lw, int32_t lh,
+	int32_t pw, int32_t ph);
 
 #endif

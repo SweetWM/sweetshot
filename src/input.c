@@ -38,6 +38,15 @@ static uint32_t mods(const struct input *in) {
 	       (in->held & 12 ? INPUT_CTRL : 0);
 }
 
+// tells the owner when the Shift/Ctrl state changes
+static void set_held(struct input *in, uint32_t held) {
+	uint32_t before = mods(in);
+	in->held = held;
+	if (in->l->mods && mods(in) != before) {
+		in->l->mods(in->data, mods(in));
+	}
+}
+
 static void pointer_enter(void *data, struct wl_pointer *pointer,
 	uint32_t serial, struct wl_surface *surface, wl_fixed_t x,
 	wl_fixed_t y) {
@@ -132,18 +141,19 @@ static void keyboard_enter(void *data, struct wl_keyboard *keyboard,
 	(void)keyboard, (void)serial, (void)surface;
 	struct input *in = data;
 	// a modifier may already be down when the overlay takes focus
-	in->held = 0;
+	uint32_t held = 0;
 	uint32_t *k;
 	wl_array_for_each(k, keys) {
-		in->held |= mod_bit(*k);
+		held |= mod_bit(*k);
 	}
+	set_held(in, held);
 }
 
 static void keyboard_leave(void *data, struct wl_keyboard *keyboard,
 	uint32_t serial, struct wl_surface *surface) {
 	(void)keyboard, (void)serial, (void)surface;
 	struct input *in = data;
-	in->held = 0;
+	set_held(in, 0);
 }
 
 static void keyboard_key(void *data, struct wl_keyboard *keyboard,
@@ -157,7 +167,7 @@ static void keyboard_key(void *data, struct wl_keyboard *keyboard,
 	}
 	uint32_t bit = mod_bit(key);
 	if (bit) {
-		in->held = pressed ? in->held | bit : in->held & ~bit;
+		set_held(in, pressed ? in->held | bit : in->held & ~bit);
 	} else if (pressed) {
 		in->l->key(in->data, key, mods(in));
 	}
