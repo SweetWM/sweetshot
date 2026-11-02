@@ -1,5 +1,6 @@
 #include "capture.h"
 
+#include "ext-foreign-toplevel-list-v1-client-protocol.h"
 #include "ext-image-capture-source-v1-client-protocol.h"
 #include "ext-image-copy-capture-v1-client-protocol.h"
 #include "log.h"
@@ -154,13 +155,13 @@ static void report_failure(uint32_t reason, const char *name) {
 	switch (reason) {
 	case EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED:
 		log_error(
-			"compositor stopped the capture of %s (session locked "
-			"or output gone)",
+			"compositor stopped the capture of %s (session locked, "
+			"or it is gone)",
 			name);
 		break;
 	case EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS:
 		log_error("capture of %s failed (reason: buffer_constraints): "
-			  "the output changed, run again",
+			  "it changed size, run again",
 			name);
 		break;
 	default:
@@ -177,8 +178,9 @@ static bool dispatch(struct conn *c) {
 	return true;
 }
 
+// alpha prefers ARGB8888 when both formats are offered
 static bool run(struct conn *c, struct ext_image_capture_source_v1 *source,
-	bool cursor, const char *name, struct shot *shot) {
+	bool cursor, bool alpha, const char *name, struct shot *shot) {
 	struct state st = {.transform = WL_OUTPUT_TRANSFORM_NORMAL};
 	struct ext_image_copy_capture_frame_v1 *frame = NULL;
 	struct wl_buffer *buffer = NULL;
@@ -223,8 +225,9 @@ static bool run(struct conn *c, struct ext_image_capture_source_v1 *source,
 			st.width, st.height, name);
 		goto out;
 	}
+	bool argb = st.argb && (alpha || !st.xrgb);
 	uint32_t format =
-		st.xrgb ? WL_SHM_FORMAT_XRGB8888 : WL_SHM_FORMAT_ARGB8888;
+		argb ? WL_SHM_FORMAT_ARGB8888 : WL_SHM_FORMAT_XRGB8888;
 
 	int fd = memfd_create("sweetshot", MFD_CLOEXEC);
 	if (fd >= 0 && ftruncate(fd, (off_t)size) == 0) {
@@ -281,7 +284,7 @@ static bool run(struct conn *c, struct ext_image_capture_source_v1 *source,
 				.width = st.width,
 				.height = st.height,
 				.stride = stride,
-				.format = st.xrgb ? PNG_XRGB8888 : PNG_ARGB8888,
+				.format = argb ? PNG_ARGB8888 : PNG_XRGB8888,
 				.data = map,
 			},
 		.map = map,
@@ -323,8 +326,120 @@ bool capture_output(struct conn *c, const struct output *o, bool cursor,
 		log_error("out of memory");
 		return false;
 	}
-	bool ok = run(c, source, cursor, o->name, shot);
+	bool ok = run(c, source, cursor, false, o->name, shot);
 	ext_image_capture_source_v1_destroy(source);
+	return ok;
+}
+
+struct toplevels {
+	const char *identifier;
+	struct ext_foreign_toplevel_handle_v1 *match;
+	bool closed;
+};
+
+static void handle_closed(
+	void *data, struct ext_foreign_toplevel_handle_v1 *handle) {
+	struct toplevels *t = data;
+	if (handle == t->match) {
+		t->closed = true;
+	}
+}
+
+static void handle_done(
+	void *data, struct ext_foreign_toplevel_handle_v1 *handle) {
+	(void)data, (void)handle;
+}
+
+static void handle_title(void *data,
+	struct ext_foreign_toplevel_handle_v1 *handle, const char *title) {
+	(void)data, (void)handle, (void)title;
+}
+
+static void handle_app_id(void *data,
+	struct ext_foreign_toplevel_handle_v1 *handle, const char *app_id) {
+	(void)data, (void)handle, (void)app_id;
+}
+
+// every handle sends its identifier before its first done, so the others
+// can go right away instead of being collected
+static void handle_identifier(void *data,
+	struct ext_foreign_toplevel_handle_v1 *handle, const char *identifier) {
+	struct toplevels *t = data;
+	if (!t->match && strcmp(identifier, t->identifier) == 0) {
+		t->match = handle;
+	} else if (handle != t->match) {
+		ext_foreign_toplevel_handle_v1_destroy(handle);
+	}
+}
+
+static const struct ext_foreign_toplevel_handle_v1_listener handle_listener = {
+	.closed = handle_closed,
+	.done = handle_done,
+	.title = handle_title,
+	.app_id = handle_app_id,
+	.identifier = handle_identifier,
+};
+
+static void list_toplevel(void *data, struct ext_foreign_toplevel_list_v1 *list,
+	struct ext_foreign_toplevel_handle_v1 *handle) {
+	(void)list;
+	ext_foreign_toplevel_handle_v1_add_listener(
+		handle, &handle_listener, data);
+}
+
+static void list_finished(
+	void *data, struct ext_foreign_toplevel_list_v1 *list) {
+	(void)data, (void)list;
+}
+
+static const struct ext_foreign_toplevel_list_v1_listener list_listener = {
+	.toplevel = list_toplevel,
+	.finished = list_finished,
+};
+
+bool capture_window(struct conn *c, const char *identifier, bool cursor,
+	struct shot *shot) {
+	static const char name[] = "the focused window";
+	struct toplevels t = {.identifier = identifier};
+	struct ext_image_capture_source_v1 *source = NULL;
+	bool ok = false;
+	// bound only here: a bound list streams every toplevel's handle
+	struct ext_foreign_toplevel_list_v1 *list =
+		wl_registry_bind(c->registry, c->toplevel_list_name,
+			&ext_foreign_toplevel_list_v1_interface, 1);
+	if (!list) {
+		log_error("out of memory");
+		return false;
+	}
+	ext_foreign_toplevel_list_v1_add_listener(list, &list_listener, &t);
+	// the compositor sends every handle and its identifier before the
+	// roundtrip's reply
+	if (wl_display_roundtrip(c->display) < 0) {
+		log_error("lost the Wayland connection");
+		goto out;
+	}
+	if (!t.match || t.closed) {
+		log_error("%s is gone (no toplevel with identifier %s)", name,
+			identifier);
+		goto out;
+	}
+	source =
+		ext_foreign_toplevel_image_capture_source_manager_v1_create_source(
+			c->toplevel_source, t.match);
+	if (!source) {
+		log_error("out of memory");
+		goto out;
+	}
+	ok = run(c, source, cursor, true, name, shot);
+
+out:
+	if (source) {
+		ext_image_capture_source_v1_destroy(source);
+	}
+	if (t.match) {
+		ext_foreign_toplevel_handle_v1_destroy(t.match);
+	}
+	ext_foreign_toplevel_list_v1_destroy(list);
 	return ok;
 }
 

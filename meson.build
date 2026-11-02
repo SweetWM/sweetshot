@@ -39,6 +39,7 @@ executable(
 	'src/rect.c',
 	'src/save.c',
 	'src/select.c',
+	'src/sweets.c',
 	'src/wl.c',
 	dependencies: [wayland_client, zlib, sweetshot_protocols_dep],
 	install: true,
