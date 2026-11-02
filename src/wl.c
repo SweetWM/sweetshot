@@ -2,6 +2,7 @@
 
 #include "cursor-shape-v1-client-protocol.h"
 #include "ext-data-control-v1-client-protocol.h"
+#include "ext-foreign-toplevel-list-v1-client-protocol.h"
 #include "ext-image-capture-source-v1-client-protocol.h"
 #include "ext-image-copy-capture-v1-client-protocol.h"
 #include "log.h"
@@ -160,6 +161,10 @@ static void registry_global(void *data, struct wl_registry *registry,
 		   !c->layer_shell) {
 		c->layer_shell =
 			bind_global(c, name, &zwlr_layer_shell_v1_interface, 1);
+	} else if (is(iface, &ext_foreign_toplevel_list_v1_interface)) {
+		// binding streams every toplevel, so window capture binds it
+		// itself when it needs it
+		c->toplevel_list_name = name;
 	} else if (is(iface, cursor_shape) && !c->cursor_shape) {
 		c->cursor_shape = bind_global(c, name, cursor_shape, 1);
 	}
@@ -305,6 +310,9 @@ static bool has(const struct conn *c, const struct wl_interface *iface) {
 	}
 	if (iface == &ext_data_control_manager_v1_interface) {
 		return c->data_control;
+	}
+	if (iface == &ext_foreign_toplevel_list_v1_interface) {
+		return c->toplevel_list_name;
 	}
 	if (iface == &wl_compositor_interface) {
 		return c->compositor;

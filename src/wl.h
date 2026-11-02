@@ -25,6 +25,7 @@ struct conn {
 	struct ext_foreign_toplevel_image_capture_source_manager_v1
 		*toplevel_source;
 	struct ext_data_control_manager_v1 *data_control;
+	uint32_t toplevel_list_name; // ext_foreign_toplevel_list_v1, unbound
 	struct wl_compositor *compositor; // v4
 	struct wl_subcompositor *subcompositor;
 	struct wp_viewporter *viewporter;

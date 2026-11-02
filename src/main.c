@@ -2,6 +2,7 @@
 #include "cli.h"
 #include "clip.h"
 #include "ext-data-control-v1-client-protocol.h"
+#include "ext-foreign-toplevel-list-v1-client-protocol.h"
 #include "ext-image-capture-source-v1-client-protocol.h"
 #include "ext-image-copy-capture-v1-client-protocol.h"
 #include "log.h"
@@ -9,6 +10,7 @@
 #include "save.h"
 #include "select.h"
 #include "single-pixel-buffer-v1-client-protocol.h"
+#include "sweets.h"
 #include "viewporter-client-protocol.h"
 #include "wl.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
@@ -49,6 +51,7 @@ static const struct wl_interface *const window_needs[] = {
 	&wl_shm_interface,
 	&ext_image_copy_capture_manager_v1_interface,
 	&ext_foreign_toplevel_image_capture_source_manager_v1_interface,
+	&ext_foreign_toplevel_list_v1_interface,
 	NULL,
 };
 
@@ -82,14 +85,47 @@ static int encode(struct shot *shot, const struct png_image *img, uint8_t **png,
 	return ok ? 0 : 1;
 }
 
+// without a NAME, the output of the focused window, else the first one
 static int shoot_output(
 	struct conn *c, const struct args *a, uint8_t **png, size_t *len) {
-	struct output *o = find_output(c, a->name);
+	const char *name = a->name;
+	struct focus f;
+	if (!name && !sweets_focus(&f)) {
+		f = (struct focus){0};
+		log_error("using the first output");
+	}
+	if (!name && f.found && f.output[0]) {
+		name = f.output;
+	}
+	struct output *o = find_output(c, name);
 	if (!o) {
 		return 2;
 	}
 	struct shot shot;
 	if (!capture_output(c, o, a->cursor, &shot)) {
+		return 1;
+	}
+	return encode(&shot, &shot.image, png, len);
+}
+
+// the window focused when sweetshot started, a later focus change does not
+// retarget it, and a missing one is an error, never another window
+static int shoot_window(
+	struct conn *c, const struct args *a, uint8_t **png, size_t *len) {
+	struct focus f;
+	if (!sweets_focus(&f)) {
+		return 1;
+	}
+	if (!f.found) {
+		log_error("no window has focus");
+		return 1;
+	}
+	if (!f.identifier[0]) {
+		log_error("the focused window has no capture identifier");
+		return 1;
+	}
+	struct shot shot;
+	if (!capture_window(c, f.identifier, a->cursor, &shot)) {
 		return 1;
 	}
 	return encode(&shot, &shot.image, png, len);
@@ -165,12 +201,13 @@ int main(int argc, char **argv) {
 	if (a.clip && !a.file && !conn_require(&conn, clip_needs)) {
 		goto out;
 	}
-	if (a.cmd == CMD_WINDOW) {
-		log_error("window: not implemented yet");
-		goto out;
-	}
-	status = a.cmd == CMD_REGION ? shoot_region(&conn, &a, &png, &len)
-				     : shoot_output(&conn, &a, &png, &len);
+	int (*shoot[])(
+		struct conn *, const struct args *, uint8_t **, size_t *) = {
+		[CMD_REGION] = shoot_region,
+		[CMD_OUTPUT] = shoot_output,
+		[CMD_WINDOW] = shoot_window,
+	};
+	status = shoot[a.cmd](&conn, &a, &png, &len);
 	if (status != 0) {
 		goto out;
 	}
