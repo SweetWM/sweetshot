@@ -10,7 +10,7 @@ enum {
 };
 
 // positions are surface-local logical coordinates, as the compositor sent
-// them; every callback but mods must be set
+// them; every callback but mods and wheel must be set
 struct input_listener {
 	void (*enter)(void *data, struct wl_surface *surface, wl_fixed_t x,
 		wl_fixed_t y);
@@ -21,6 +21,8 @@ struct input_listener {
 	void (*key)(void *data, uint32_t key, uint32_t mods);
 	// Shift or Ctrl went down or up, or focus changed them; may be NULL
 	void (*mods)(void *data, uint32_t mods);
+	// vertical wheel clicks, negative is up; may be NULL
+	void (*wheel)(void *data, int32_t steps);
 };
 
 struct input;

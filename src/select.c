@@ -2,6 +2,7 @@
 
 #include "input.h"
 #include "log.h"
+#include "overlay.h"
 #include "single-pixel-buffer-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
@@ -397,18 +398,7 @@ static bool add_overlay(struct selector *s, const struct output *out) {
 		wl_surface_set_input_region(p->surface, s->no_input);
 	}
 
-	zwlr_layer_surface_v1_add_listener(o->layer, &layer_listener, o);
-	zwlr_layer_surface_v1_set_anchor(
-		o->layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
-				  ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
-				  ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
-				  ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-	// cover panels too instead of being placed beside them
-	zwlr_layer_surface_v1_set_exclusive_zone(o->layer, -1);
-	zwlr_layer_surface_v1_set_keyboard_interactivity(o->layer,
-		ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
-	// no buffer yet: this commit asks for the first configure
-	wl_surface_commit(o->surface);
+	overlay_map(o->layer, o->surface, &layer_listener, o);
 	return true;
 }
 

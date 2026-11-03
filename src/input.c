@@ -100,9 +100,14 @@ static void pointer_axis_stop(
 	(void)data, (void)pointer, (void)time, (void)axis;
 }
 
+// the seat is bound at v5, so wheels send axis_discrete, not value120
 static void pointer_axis_discrete(void *data, struct wl_pointer *pointer,
 	uint32_t axis, int32_t discrete) {
-	(void)data, (void)pointer, (void)axis, (void)discrete;
+	(void)pointer;
+	struct input *in = data;
+	if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL && in->l->wheel) {
+		in->l->wheel(in->data, discrete);
+	}
 }
 
 static void pointer_axis_value120(

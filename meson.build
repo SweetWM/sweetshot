@@ -33,7 +33,9 @@ sweetshot_inc = include_directories('src')
 executable(
 	'sweetshot',
 	'src/main.c',
+	'src/overlay.c',
 	'src/capture.c',
+	'src/chip.c',
 	'src/cli.c',
 	'src/clip.c',
 	'src/draw.c',
