@@ -1,6 +1,7 @@
 #ifndef SWEETSHOT_BAR_H
 #define SWEETSHOT_BAR_H
 
+#include "icon.h"
 #include "rect.h"
 
 #include <stddef.h>
@@ -20,6 +21,7 @@ enum {
 	// 8 tools, fill, 9 colours, 7 sizes, undo, redo, cancel, done
 	BAR_BUTTONS = 29,
 	BAR_BUTTON = 32, // logical px, one icon
+	BAR_OPS = 128,	 // draw ops of the whole bar, with room to spare
 };
 
 struct bar_button {
@@ -33,6 +35,17 @@ struct bar {
 	struct bar_button buttons[BAR_BUTTONS];
 	int32_t w;
 	int32_t h;
+};
+
+// what the bar shows as current
+struct bar_state {
+	size_t tool;  // tool_keys index
+	size_t color; // draw_palette index
+	size_t size;  // draw_sizes index
+	bool fill;
+	bool can_undo;
+	bool can_redo;
+	int hover; // button, or -1
 };
 
 // what a click means: the key it stands for, or a size to set
@@ -53,5 +66,8 @@ struct rect bar_place(
 int bar_hit(const struct bar *b, double x, double y);
 
 struct bar_action bar_action(const struct bar *b, int button);
+
+size_t bar_ops(const struct bar *b, const struct bar_state *st, float f,
+	struct draw_op *ops, struct raster_point (*pts)[ICON_PTS]);
 
 #endif

@@ -1,6 +1,6 @@
 #include "edit.h"
 
-#include "chip.h"
+#include "hud.h"
 #include "input.h"
 #include "log.h"
 #include "overlay.h"
@@ -46,7 +46,7 @@ struct editor {
 	struct wl_surface *img; // the picture, synchronized subsurface
 	struct wl_subsurface *sub;
 	struct wp_viewport *img_viewport;
-	struct chip *chip; // above the picture, next to the pointer
+	struct hud *hud; // toolbar and chip, above the picture
 	struct buf bufs[2];
 	int front; // the buffer last attached, or drawn first
 	uint8_t *map;
@@ -81,7 +81,7 @@ static void render(struct editor *e, int i, struct rect clip) {
 }
 
 static void frame_done(void *data, struct wl_callback *cb, uint32_t time);
-static void update_chip(struct editor *e);
+static void update_hud(struct editor *e);
 
 static const struct wl_callback_listener frame_listener = {
 	.done = frame_done,
@@ -107,7 +107,7 @@ static void attach(struct editor *e, int i, struct rect damage) {
 	e->front = i;
 }
 
-// draws the back buffer and moves the chip, paced by the frame callback and
+// draws the back buffer and updates the hud, paced by the frame callback and
 // by buffer release, never by timers
 static void redraw(struct editor *e) {
 	if (e->frame || e->lw == 0 || e->state != EDITING) {
@@ -117,8 +117,8 @@ static void redraw(struct editor *e) {
 	// an image change waits for the back buffer's release, which calls
 	// back here
 	bool image = e->dirty && !e->bufs[back].busy;
-	bool chip = chip_dirty(e->chip);
-	if (!image && !chip) {
+	bool hud = hud_dirty(e->hud);
+	if (!image && !hud) {
 		return;
 	}
 	if (image) {
@@ -128,8 +128,8 @@ static void redraw(struct editor *e) {
 		e->pending = (struct rect){0};
 		e->dirty = false;
 	}
-	if (chip) {
-		chip_apply(e->chip);
+	if (hud) {
+		hud_apply(e->hud);
 	}
 	request_frame(e);
 	// the subsurfaces are synchronized: their state lands with this commit
@@ -213,10 +213,15 @@ static void layer_configure(void *data, struct zwlr_layer_surface_v1 *layer,
 		render(e, 0, e->whole);
 		attach(e, 0, e->whole);
 	}
-	wl_surface_commit(e->img);
+	// the toolbar lands in the same commit as the picture: with a frame
+	// pending, update_hud only prepares it
 	request_frame(e);
+	update_hud(e);
+	if (hud_dirty(e->hud)) {
+		hud_apply(e->hud);
+	}
+	wl_surface_commit(e->img);
 	wl_surface_commit(e->surface);
-	update_chip(e);
 }
 
 static void layer_closed(void *data, struct zwlr_layer_surface_v1 *layer) {
@@ -237,36 +242,36 @@ static bool pointer_image(const struct editor *e, struct raster_point *p) {
 	return x >= 0.0f && x <= e->tool.w && y >= 0.0f && y <= e->tool.h;
 }
 
-// output pixels per logical pixel, for the chip; a window image's own
-// ratio can differ when it is shrunk to fit
+// output pixels per logical pixel, for the toolbar and chip; a window
+// image's own ratio can differ when it is shrunk to fit
 static double output_scale(const struct editor *e) {
 	const struct output *o = e->in.output;
 	int32_t pw = o->transform & 1 ? o->mode_h : o->mode_w;
 	return pw > 0 ? (double)pw / e->lw : 1.0;
 }
 
-// the chip shows the current tool next to the pointer, only over the image
-// and never during a drag
-static void update_chip(struct editor *e) {
+// the toolbar shows the tool state; the chip shows the current tool next to
+// the pointer, only over the image and never during a drag
+static void update_hud(struct editor *e) {
 	if (e->lw == 0 || e->state != EDITING) {
 		return;
 	}
-	const struct tool *t = &e->tool;
-	struct chip_look look = {
-		.kind = t->kind,
-		.color = draw_palette[t->color],
-		.size = draw_sizes[t->size],
-		.fill = t->fill,
-		.badge = tool_next_badge(t),
+	struct raster_point p;
+	struct hud_view v = {
+		.tool = &e->tool,
+		.scale = output_scale(e),
+		.lw = e->lw,
+		.lh = e->lh,
+		.image = e->place.at,
+		.px = e->px,
+		.py = e->py,
+		.chip = e->over && !e->tool.dragging && pointer_image(e, &p),
 	};
-	if (!chip_set(e->chip, &look, output_scale(e))) {
+	if (!hud_update(e->hud, &v)) {
 		// reported
 		e->state = FAILED;
 		return;
 	}
-	struct raster_point p;
-	bool shown = e->over && !t->dragging && pointer_image(e, &p);
-	chip_move(e->chip, e->px, e->py, e->lw, e->lh, shown);
 	redraw(e);
 }
 
@@ -286,13 +291,13 @@ static void on_enter(
 	e->over = surface && surface == e->surface;
 	e->px = wl_fixed_to_double(x);
 	e->py = wl_fixed_to_double(y);
-	update_chip(e);
+	update_hud(e);
 }
 
 static void on_leave(void *data) {
 	struct editor *e = data;
 	e->over = false;
-	update_chip(e);
+	update_hud(e);
 }
 
 static void on_motion(void *data, wl_fixed_t x, wl_fixed_t y) {
@@ -303,7 +308,7 @@ static void on_motion(void *data, wl_fixed_t x, wl_fixed_t y) {
 	if (e->tool.dragging && e->state == EDITING) {
 		drag(e);
 	}
-	update_chip(e);
+	update_hud(e);
 }
 
 static void on_button(void *data, uint32_t button, bool pressed) {
@@ -327,7 +332,7 @@ static void on_button(void *data, uint32_t button, bool pressed) {
 		fail(e, "out of memory");
 	}
 	damage(e, r);
-	update_chip(e);
+	update_hud(e);
 }
 
 static void on_key(void *data, uint32_t key, uint32_t mods) {
@@ -340,10 +345,13 @@ static void on_key(void *data, uint32_t key, uint32_t mods) {
 		e->state = CANCELLED;
 	} else if (key == KEY_ENTER || key == KEY_KPENTER) {
 		e->state = DONE;
+	} else if (key == KEY_TAB) {
+		hud_toggle(e->hud);
+		update_hud(e);
 	} else {
 		damage(e, tool_key(&e->tool, key, mods & INPUT_CTRL,
 				  mods & INPUT_SHIFT));
-		update_chip(e);
+		update_hud(e);
 	}
 }
 
@@ -351,7 +359,7 @@ static void on_wheel(void *data, int32_t steps) {
 	struct editor *e = data;
 	// up, negative, is larger
 	tool_resize(&e->tool, -steps);
-	update_chip(e);
+	update_hud(e);
 }
 
 // Shift squares the shape being drawn without waiting for pointer motion
@@ -387,8 +395,8 @@ static void unmap(struct editor *e) {
 			e->bufs[i].wl = NULL;
 		}
 	}
-	chip_destroy(e->chip);
-	e->chip = NULL;
+	hud_destroy(e->hud);
+	e->hud = NULL;
 	if (e->img_viewport) {
 		wp_viewport_destroy(e->img_viewport);
 		e->img_viewport = NULL;
@@ -528,8 +536,8 @@ struct editor *edit_create(struct conn *c, const struct edit_input *in) {
 	// pointer input always lands on the layer, in its coordinates
 	wl_surface_set_input_region(e->img, e->no_input);
 	// reports its own error
-	e->chip = chip_create(c, e->surface, e->no_input);
-	if (!e->chip || !add_buffers(e)) {
+	e->hud = hud_create(c, e->surface, e->no_input);
+	if (!e->hud || !add_buffers(e)) {
 		goto fail;
 	}
 	overlay_map(e->layer, e->surface, &layer_listener, e);
