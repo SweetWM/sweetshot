@@ -178,8 +178,48 @@ struct rect draw_bounds(const struct draw_op *op) {
 	return raster_pixels(f);
 }
 
-struct raster_point draw_square(
+// the longest step from a along d (a unit vector) that stays in the image
+static float room(struct raster_point a, float dx, float dy, float w, float h) {
+	float t = INFINITY;
+	if (dx != 0.0f) {
+		t = fminf(t, (dx > 0.0f ? w - a.x : -a.x) / dx);
+	}
+	if (dy != 0.0f) {
+		t = fminf(t, (dy > 0.0f ? h - a.y : -a.y) / dy);
+	}
+	return fmaxf(t, 0.0f);
+}
+
+static struct raster_point snap45(
 	struct raster_point a, struct raster_point b, float w, float h) {
+	const float s = 0.70710678f;
+	const float dirs[8][2] = {{1, 0}, {s, s}, {0, 1}, {-s, s}, {-1, 0},
+		{-s, -s}, {0, -1}, {s, -s}};
+	float dx = b.x - a.x;
+	float dy = b.y - a.y;
+	float best = 0.0f;
+	float ux = 0.0f;
+	float uy = 0.0f;
+	for (int i = 0; i < 8; i++) {
+		float d = dx * dirs[i][0] + dy * dirs[i][1];
+		if (d > best) {
+			best = d;
+			ux = dirs[i][0];
+			uy = dirs[i][1];
+		}
+	}
+	float len = fminf(best, room(a, ux, uy, w, h));
+	return (struct raster_point){a.x + ux * len, a.y + uy * len};
+}
+
+struct raster_point draw_constrain(enum draw_kind kind, struct raster_point a,
+	struct raster_point b, float w, float h) {
+	if (kind == DRAW_LINE || kind == DRAW_ARROW) {
+		return snap45(a, b, w, h);
+	}
+	if (kind == DRAW_PEN || kind == DRAW_BADGE) {
+		return b;
+	}
 	float dx = b.x - a.x;
 	float dy = b.y - a.y;
 	float side = fmaxf(fabsf(dx), fabsf(dy));

@@ -1,7 +1,9 @@
 #include "edit.h"
 
+#include "chip.h"
 #include "input.h"
 #include "log.h"
+#include "overlay.h"
 #include "single-pixel-buffer-v1-client-protocol.h"
 #include "tool.h"
 #include "viewporter-client-protocol.h"
@@ -20,13 +22,6 @@ enum state {
 	FAILED, // already reported
 };
 
-struct catcher {
-	struct editor *e;
-	struct wl_surface *surface;
-	struct wp_viewport *viewport;
-	struct zwlr_layer_surface_v1 *layer;
-};
-
 // a display buffer, the compositor reads it until release
 struct buf {
 	struct editor *e;
@@ -43,9 +38,7 @@ struct editor {
 	size_t stride;
 	struct input *input;
 	struct wl_buffer *dim;
-	struct wl_buffer *clear;
-	struct catcher *catchers;
-	size_t n_catchers;
+	struct catchers *catchers;
 	struct wl_region *no_input;
 	struct wl_surface *surface; // the layer: dim base, takes all input
 	struct wp_viewport *viewport;
@@ -53,6 +46,7 @@ struct editor {
 	struct wl_surface *img; // the picture, synchronized subsurface
 	struct wl_subsurface *sub;
 	struct wp_viewport *img_viewport;
+	struct chip *chip; // above the picture, next to the pointer
 	struct buf bufs[2];
 	int front; // the buffer last attached, or drawn first
 	uint8_t *map;
@@ -87,6 +81,7 @@ static void render(struct editor *e, int i, struct rect clip) {
 }
 
 static void frame_done(void *data, struct wl_callback *cb, uint32_t time);
+static void update_chip(struct editor *e);
 
 static const struct wl_callback_listener frame_listener = {
 	.done = frame_done,
@@ -112,25 +107,33 @@ static void attach(struct editor *e, int i, struct rect damage) {
 	e->front = i;
 }
 
-// draws the back buffer and shows it, paced by the frame callback and by
-// buffer release, never by timers
+// draws the back buffer and moves the chip, paced by the frame callback and
+// by buffer release, never by timers
 static void redraw(struct editor *e) {
-	if (!e->dirty || e->frame || e->lw == 0 || e->state != EDITING) {
+	if (e->frame || e->lw == 0 || e->state != EDITING) {
 		return;
 	}
 	int back = !e->front;
-	if (e->bufs[back].busy) {
-		// its release calls back here
+	// an image change waits for the back buffer's release, which calls
+	// back here
+	bool image = e->dirty && !e->bufs[back].busy;
+	bool chip = chip_dirty(e->chip);
+	if (!image && !chip) {
 		return;
 	}
-	render(e, back, e->bufs[back].stale);
-	attach(e, back, e->pending);
-	wl_surface_commit(e->img);
+	if (image) {
+		render(e, back, e->bufs[back].stale);
+		attach(e, back, e->pending);
+		wl_surface_commit(e->img);
+		e->pending = (struct rect){0};
+		e->dirty = false;
+	}
+	if (chip) {
+		chip_apply(e->chip);
+	}
 	request_frame(e);
-	// the subsurface is synchronized: its state lands with this commit
+	// the subsurfaces are synchronized: their state lands with this commit
 	wl_surface_commit(e->surface);
-	e->pending = (struct rect){0};
-	e->dirty = false;
 }
 
 static void damage(struct editor *e, struct rect r) {
@@ -213,6 +216,7 @@ static void layer_configure(void *data, struct zwlr_layer_surface_v1 *layer,
 	wl_surface_commit(e->img);
 	request_frame(e);
 	wl_surface_commit(e->surface);
+	update_chip(e);
 }
 
 static void layer_closed(void *data, struct zwlr_layer_surface_v1 *layer) {
@@ -225,91 +229,55 @@ static const struct zwlr_layer_surface_v1_listener layer_listener = {
 	.closed = layer_closed,
 };
 
-static void catcher_configure(void *data, struct zwlr_layer_surface_v1 *layer,
-	uint32_t serial, uint32_t w, uint32_t h) {
-	struct catcher *k = data;
-	zwlr_layer_surface_v1_ack_configure(layer, serial);
-	if (w == 0 || h == 0 || w > INT32_MAX || h > INT32_MAX) {
-		return;
-	}
-	wp_viewport_set_destination(k->viewport, (int32_t)w, (int32_t)h);
-	wl_surface_attach(k->surface, k->e->clear, 0, 0);
-	wl_surface_damage_buffer(k->surface, 0, 0, 1, 1);
-	wl_surface_commit(k->surface);
-}
-
-// its output went away; editing goes on
-static void catcher_closed(void *data, struct zwlr_layer_surface_v1 *layer) {
-	(void)data, (void)layer;
-}
-
-static const struct zwlr_layer_surface_v1_listener catcher_listener = {
-	.configure = catcher_configure,
-	.closed = catcher_closed,
-};
-
-// full-output overlay with exclusive keyboard; the first commit asks for a
-// configure
-static void map_layer(struct zwlr_layer_surface_v1 *layer,
-	struct wl_surface *surface,
-	const struct zwlr_layer_surface_v1_listener *l, void *data) {
-	zwlr_layer_surface_v1_add_listener(layer, l, data);
-	zwlr_layer_surface_v1_set_anchor(
-		layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
-			       ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
-			       ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
-			       ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-	// cover panels too instead of being placed beside them
-	zwlr_layer_surface_v1_set_exclusive_zone(layer, -1);
-	zwlr_layer_surface_v1_set_keyboard_interactivity(
-		layer, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
-	wl_surface_commit(surface);
-}
-
-static bool add_catchers(struct editor *e) {
-	struct conn *c = e->conn;
-	e->catchers = calloc(wl_list_length(&c->outputs), sizeof(*e->catchers));
-	if (!e->catchers) {
-		return false;
-	}
-	struct output *o;
-	wl_list_for_each(o, &c->outputs, link) {
-		if (o == e->in.output) {
-			continue;
-		}
-		struct catcher *k = &e->catchers[e->n_catchers++];
-		k->e = e;
-		k->surface = wl_compositor_create_surface(c->compositor);
-		if (!k->surface) {
-			return false;
-		}
-		k->viewport =
-			wp_viewporter_get_viewport(c->viewporter, k->surface);
-		k->layer = zwlr_layer_shell_v1_get_layer_surface(c->layer_shell,
-			k->surface, o->wl, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
-			"sweetshot");
-		if (!k->viewport || !k->layer) {
-			return false;
-		}
-		wl_surface_set_input_region(k->surface, e->no_input);
-		map_layer(k->layer, k->surface, &catcher_listener, k);
-	}
-	return true;
-}
-
-// the pointer in image pixels, on whole pixels so rect edges stay crisp;
-// false when it is off the image
+// the pointer in image pixels; false when it is off the image
 static bool pointer_image(const struct editor *e, struct raster_point *p) {
 	float x = (float)(e->px * e->place.sx - e->place.ox);
 	float y = (float)(e->py * e->place.sy - e->place.oy);
-	*p = (struct raster_point){roundf(x), roundf(y)};
+	*p = (struct raster_point){x, y};
 	return x >= 0.0f && x <= e->tool.w && y >= 0.0f && y <= e->tool.h;
+}
+
+// output pixels per logical pixel, for the chip; a window image's own
+// ratio can differ when it is shrunk to fit
+static double output_scale(const struct editor *e) {
+	const struct output *o = e->in.output;
+	int32_t pw = o->transform & 1 ? o->mode_h : o->mode_w;
+	return pw > 0 ? (double)pw / e->lw : 1.0;
+}
+
+// the chip shows the current tool next to the pointer, only over the image
+// and never during a drag
+static void update_chip(struct editor *e) {
+	if (e->lw == 0 || e->state != EDITING) {
+		return;
+	}
+	const struct tool *t = &e->tool;
+	struct chip_look look = {
+		.kind = t->kind,
+		.color = draw_palette[t->color],
+		.size = draw_sizes[t->size],
+		.fill = t->fill,
+		.badge = tool_next_badge(t),
+	};
+	if (!chip_set(e->chip, &look, output_scale(e))) {
+		// reported
+		e->state = FAILED;
+		return;
+	}
+	struct raster_point p;
+	bool shown = e->over && !t->dragging && pointer_image(e, &p);
+	chip_move(e->chip, e->px, e->py, e->lw, e->lh, shown);
+	redraw(e);
 }
 
 static void drag(struct editor *e) {
 	struct raster_point p;
+	struct rect r;
 	pointer_image(e, &p);
-	damage(e, tool_drag(&e->tool, p, e->mods & INPUT_SHIFT));
+	if (!tool_drag(&e->tool, p, e->mods & INPUT_SHIFT, &r)) {
+		fail(e, "out of memory");
+	}
+	damage(e, r);
 }
 
 static void on_enter(
@@ -318,42 +286,48 @@ static void on_enter(
 	e->over = surface && surface == e->surface;
 	e->px = wl_fixed_to_double(x);
 	e->py = wl_fixed_to_double(y);
+	update_chip(e);
 }
 
 static void on_leave(void *data) {
 	struct editor *e = data;
 	e->over = false;
+	update_chip(e);
 }
 
 static void on_motion(void *data, wl_fixed_t x, wl_fixed_t y) {
 	struct editor *e = data;
 	e->px = wl_fixed_to_double(x);
 	e->py = wl_fixed_to_double(y);
-	// motion without a drag changes nothing on screen
+	// motion without a drag only moves the chip
 	if (e->tool.dragging && e->state == EDITING) {
 		drag(e);
 	}
+	update_chip(e);
 }
 
 static void on_button(void *data, uint32_t button, bool pressed) {
 	struct editor *e = data;
 	struct tool *t = &e->tool;
 	struct raster_point p;
+	struct rect r = {0};
+	bool ok = true;
 	if (e->state != EDITING || e->lw == 0) {
 		return;
 	}
 	if (button == BTN_LEFT && pressed && !t->dragging && e->over &&
 		pointer_image(e, &p)) {
-		tool_press(t, p);
+		ok = tool_press(t, p, &r);
 	} else if (button == BTN_LEFT && !pressed) {
-		struct rect r;
-		if (!tool_release(t, &r)) {
-			fail(e, "out of memory");
-		}
-		damage(e, r);
+		ok = tool_release(t, &r);
 	} else if (button == BTN_RIGHT && pressed) {
-		damage(e, tool_drop(t));
+		r = tool_drop(t);
 	}
+	if (!ok) {
+		fail(e, "out of memory");
+	}
+	damage(e, r);
+	update_chip(e);
 }
 
 static void on_key(void *data, uint32_t key, uint32_t mods) {
@@ -369,7 +343,15 @@ static void on_key(void *data, uint32_t key, uint32_t mods) {
 	} else {
 		damage(e, tool_key(&e->tool, key, mods & INPUT_CTRL,
 				  mods & INPUT_SHIFT));
+		update_chip(e);
 	}
+}
+
+static void on_wheel(void *data, int32_t steps) {
+	struct editor *e = data;
+	// up, negative, is larger
+	tool_resize(&e->tool, -steps);
+	update_chip(e);
 }
 
 // Shift squares the shape being drawn without waiting for pointer motion
@@ -388,25 +370,13 @@ static const struct input_listener input_listener = {
 	.button = on_button,
 	.key = on_key,
 	.mods = on_mods,
+	.wheel = on_wheel,
 };
 
 // every Wayland object, in reverse creation order; the pixels stay
 static void unmap(struct editor *e) {
-	for (size_t i = e->n_catchers; i > 0; i--) {
-		struct catcher *k = &e->catchers[i - 1];
-		if (k->layer) {
-			zwlr_layer_surface_v1_destroy(k->layer);
-		}
-		if (k->viewport) {
-			wp_viewport_destroy(k->viewport);
-		}
-		if (k->surface) {
-			wl_surface_destroy(k->surface);
-		}
-	}
-	free(e->catchers);
+	catchers_destroy(e->catchers);
 	e->catchers = NULL;
-	e->n_catchers = 0;
 	if (e->frame) {
 		wl_callback_destroy(e->frame);
 		e->frame = NULL;
@@ -417,6 +387,8 @@ static void unmap(struct editor *e) {
 			e->bufs[i].wl = NULL;
 		}
 	}
+	chip_destroy(e->chip);
+	e->chip = NULL;
 	if (e->img_viewport) {
 		wp_viewport_destroy(e->img_viewport);
 		e->img_viewport = NULL;
@@ -444,10 +416,6 @@ static void unmap(struct editor *e) {
 	if (e->no_input) {
 		wl_region_destroy(e->no_input);
 		e->no_input = NULL;
-	}
-	if (e->clear) {
-		wl_buffer_destroy(e->clear);
-		e->clear = NULL;
 	}
 	if (e->dim) {
 		wl_buffer_destroy(e->dim);
@@ -538,11 +506,9 @@ struct editor *edit_create(struct conn *c, const struct edit_input *in) {
 	// premultiplied black at ~45%, as the selector
 	e->dim = wp_single_pixel_buffer_manager_v1_create_u32_rgba_buffer(
 		c->single_pixel, 0, 0, 0, 0x73333333);
-	e->clear = wp_single_pixel_buffer_manager_v1_create_u32_rgba_buffer(
-		c->single_pixel, 0, 0, 0, 0);
 	e->no_input = wl_compositor_create_region(c->compositor);
 	e->surface = wl_compositor_create_surface(c->compositor);
-	if (!e->dim || !e->clear || !e->no_input || !e->surface) {
+	if (!e->dim || !e->no_input || !e->surface) {
 		goto oom;
 	}
 	e->viewport = wp_viewporter_get_viewport(c->viewporter, e->surface);
@@ -561,12 +527,16 @@ struct editor *edit_create(struct conn *c, const struct edit_input *in) {
 	}
 	// pointer input always lands on the layer, in its coordinates
 	wl_surface_set_input_region(e->img, e->no_input);
-	if (!add_buffers(e)) {
+	// reports its own error
+	e->chip = chip_create(c, e->surface, e->no_input);
+	if (!e->chip || !add_buffers(e)) {
 		goto fail;
 	}
-	map_layer(e->layer, e->surface, &layer_listener, e);
-	if (!add_catchers(e)) {
-		goto oom;
+	overlay_map(e->layer, e->surface, &layer_listener, e);
+	// keys reach the editor whichever output the pointer is on
+	e->catchers = catchers_create(c, in->output);
+	if (!e->catchers) {
+		goto fail;
 	}
 	return e;
 

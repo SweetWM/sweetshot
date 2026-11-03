@@ -59,7 +59,6 @@ static void output_description(
 	(void)data, (void)wl, (void)description;
 }
 
-
 static const struct wl_output_listener output_listener = {
 	.geometry = output_geometry,
 	.mode = output_mode,
