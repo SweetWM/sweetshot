@@ -178,157 +178,253 @@ static bool dispatch(struct conn *c) {
 	return true;
 }
 
-// alpha prefers ARGB8888 when both formats are offered
-static bool run(struct conn *c, struct ext_image_capture_source_v1 *source,
-	bool cursor, bool alpha, const char *name, struct shot *shot) {
-	struct state st = {.transform = WL_OUTPUT_TRANSFORM_NORMAL};
-	struct ext_image_copy_capture_frame_v1 *frame = NULL;
-	struct wl_buffer *buffer = NULL;
-	void *map = MAP_FAILED;
-	size_t size = 0;
-	bool ok = false;
+// one capture in a batch: its source is the caller's, its shot the result
+struct job {
+	struct ext_image_capture_source_v1 *source;
+	bool cursor;
+	bool alpha; // prefer ARGB8888 when both formats are offered
+	const char *name;
+	struct shot *shot;
+	struct state st;
+	struct ext_image_copy_capture_session_v1 *session;
+	struct ext_image_copy_capture_frame_v1 *frame;
+	struct wl_buffer *buffer;
+	void *map;
+	size_t size;
+	bool argb;
+};
 
-	uint32_t options =
-		cursor ? EXT_IMAGE_COPY_CAPTURE_MANAGER_V1_OPTIONS_PAINT_CURSORS
-		       : 0;
-	struct ext_image_copy_capture_session_v1 *session =
-		ext_image_copy_capture_manager_v1_create_session(
-			c->capture, source, options);
-	if (!session) {
-		log_error("out of memory");
-		return false;
-	}
-	ext_image_copy_capture_session_v1_add_listener(
-		session, &session_listener, &st);
-	while (!st.done && !st.stopped) {
-		if (!dispatch(c)) {
-			goto out;
+static bool sessions_done(const struct job *jobs, size_t n) {
+	for (size_t i = 0; i < n; i++) {
+		if (!jobs[i].st.done && !jobs[i].st.stopped) {
+			return false;
 		}
 	}
-	if (st.stopped) {
+	return true;
+}
+
+static bool frames_done(const struct job *jobs, size_t n) {
+	for (size_t i = 0; i < n; i++) {
+		if (jobs[i].st.result == PENDING) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// sizes the buffer from the session's constraints and asks for the frame
+static bool request_frame(struct conn *c, struct job *j) {
+	const struct state *st = &j->st;
+	if (st->stopped) {
 		report_failure(
 			EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED,
-			name);
-		goto out;
+			j->name);
+		return false;
 	}
-	if (!st.xrgb && !st.argb) {
-		report_formats(&st, name);
-		goto out;
+	if (!st->xrgb && !st->argb) {
+		report_formats(st, j->name);
+		return false;
 	}
 	// wl_shm pools are sized by an int32
-	size_t stride = (size_t)st.width * 4;
-	if (st.width == 0 || st.height == 0 ||
-		__builtin_mul_overflow(stride, st.height, &size) ||
-		size > INT32_MAX) {
+	size_t stride = (size_t)st->width * 4;
+	if (st->width == 0 || st->height == 0 ||
+		__builtin_mul_overflow(stride, st->height, &j->size) ||
+		j->size > INT32_MAX) {
 		log_error(
 			"compositor sent an invalid capture size %ux%u for %s",
-			st.width, st.height, name);
-		goto out;
+			st->width, st->height, j->name);
+		return false;
 	}
-	bool argb = st.argb && (alpha || !st.xrgb);
+	j->argb = st->argb && (j->alpha || !st->xrgb);
 	uint32_t format =
-		argb ? WL_SHM_FORMAT_ARGB8888 : WL_SHM_FORMAT_XRGB8888;
+		j->argb ? WL_SHM_FORMAT_ARGB8888 : WL_SHM_FORMAT_XRGB8888;
 
 	int fd = memfd_create("sweetshot", MFD_CLOEXEC);
-	if (fd >= 0 && ftruncate(fd, (off_t)size) == 0) {
-		map = mmap(
-			NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (fd >= 0 && ftruncate(fd, (off_t)j->size) == 0) {
+		j->map = mmap(NULL, j->size, PROT_READ | PROT_WRITE, MAP_SHARED,
+			fd, 0);
 	}
-	if (map == MAP_FAILED) {
+	if (j->map == MAP_FAILED) {
 		log_error("cannot allocate the shared-memory capture buffer");
 		if (fd >= 0) {
 			close(fd);
 		}
-		goto out;
+		return false;
 	}
 	// libwayland dups the fd when it sends create_pool
 	struct wl_shm_pool *pool =
-		wl_shm_create_pool(c->shm, fd, (int32_t)size);
+		wl_shm_create_pool(c->shm, fd, (int32_t)j->size);
 	close(fd);
 	if (pool) {
-		buffer = wl_shm_pool_create_buffer(pool, 0, (int32_t)st.width,
-			(int32_t)st.height, (int32_t)stride, format);
+		j->buffer =
+			wl_shm_pool_create_buffer(pool, 0, (int32_t)st->width,
+				(int32_t)st->height, (int32_t)stride, format);
 		// the buffer keeps the pool's memory alive
 		wl_shm_pool_destroy(pool);
 	}
-	frame = buffer ? ext_image_copy_capture_session_v1_create_frame(session)
-		       : NULL;
-	if (!frame) {
+	j->frame = j->buffer ? ext_image_copy_capture_session_v1_create_frame(
+				       j->session)
+			     : NULL;
+	if (!j->frame) {
 		log_error("out of memory");
-		goto out;
+		return false;
 	}
 	ext_image_copy_capture_frame_v1_add_listener(
-		frame, &frame_listener, &st);
-	ext_image_copy_capture_frame_v1_attach_buffer(frame, buffer);
+		j->frame, &frame_listener, &j->st);
+	ext_image_copy_capture_frame_v1_attach_buffer(j->frame, j->buffer);
 	ext_image_copy_capture_frame_v1_damage_buffer(
-		frame, 0, 0, (int32_t)st.width, (int32_t)st.height);
-	ext_image_copy_capture_frame_v1_capture(frame);
-	while (st.result == PENDING) {
+		j->frame, 0, 0, (int32_t)st->width, (int32_t)st->height);
+	ext_image_copy_capture_frame_v1_capture(j->frame);
+	return true;
+}
+
+// the frame's pixels become the shot, which takes over map and buffer
+static bool take_shot(struct job *j) {
+	const struct state *st = &j->st;
+	if (st->result == FAILED) {
+		report_failure(st->reason, j->name);
+		return false;
+	}
+	if (st->transform > WL_OUTPUT_TRANSFORM_FLIPPED_270) {
+		log_error("compositor sent an invalid transform %u for %s",
+			st->transform, j->name);
+		return false;
+	}
+	struct shot *shot = j->shot;
+	*shot = (struct shot){
+		.image =
+			{
+				.width = st->width,
+				.height = st->height,
+				.stride = (size_t)st->width * 4,
+				.format = j->argb ? PNG_ARGB8888 : PNG_XRGB8888,
+				.data = j->map,
+			},
+		.map = j->map,
+		.map_len = j->size,
+		.buffer = j->buffer,
+		.transform = st->transform,
+	};
+	j->map = MAP_FAILED;
+	j->buffer = NULL;
+	if (st->transform != WL_OUTPUT_TRANSFORM_NORMAL) {
+		shot->heap = malloc(j->size);
+		if (!shot->heap) {
+			log_error("out of memory");
+			return false;
+		}
+		shot->image =
+			png_upright(&shot->image, st->transform, shot->heap);
+	}
+	return true;
+}
+
+static bool run(struct conn *c, struct job *jobs, size_t n) {
+	bool ok = false;
+	// all of them, so cleanup can treat every job and shot alike
+	for (size_t i = 0; i < n; i++) {
+		*jobs[i].shot = (struct shot){0};
+		jobs[i].st =
+			(struct state){.transform = WL_OUTPUT_TRANSFORM_NORMAL};
+		jobs[i].map = MAP_FAILED;
+	}
+	for (size_t i = 0; i < n; i++) {
+		struct job *j = &jobs[i];
+		uint32_t options =
+			j->cursor
+				? EXT_IMAGE_COPY_CAPTURE_MANAGER_V1_OPTIONS_PAINT_CURSORS
+				: 0;
+		j->session = ext_image_copy_capture_manager_v1_create_session(
+			c->capture, j->source, options);
+		if (!j->session) {
+			log_error("out of memory");
+			goto out;
+		}
+		ext_image_copy_capture_session_v1_add_listener(
+			j->session, &session_listener, &j->st);
+	}
+	while (!sessions_done(jobs, n)) {
 		if (!dispatch(c)) {
 			goto out;
 		}
 	}
-	if (st.result == FAILED) {
-		report_failure(st.reason, name);
-		goto out;
-	}
-	if (st.transform > WL_OUTPUT_TRANSFORM_FLIPPED_270) {
-		log_error("compositor sent an invalid transform %u for %s",
-			st.transform, name);
-		goto out;
-	}
-
-	*shot = (struct shot){
-		.image =
-			{
-				.width = st.width,
-				.height = st.height,
-				.stride = stride,
-				.format = argb ? PNG_ARGB8888 : PNG_XRGB8888,
-				.data = map,
-			},
-		.map = map,
-		.map_len = size,
-	};
-	map = MAP_FAILED; // owned by shot
-	if (st.transform != WL_OUTPUT_TRANSFORM_NORMAL) {
-		shot->heap = malloc(size);
-		if (!shot->heap) {
-			log_error("out of memory");
-			shot_finish(shot);
+	for (size_t i = 0; i < n; i++) {
+		if (!request_frame(c, &jobs[i])) {
 			goto out;
 		}
-		shot->image =
-			png_upright(&shot->image, st.transform, shot->heap);
+	}
+	while (!frames_done(jobs, n)) {
+		if (!dispatch(c)) {
+			goto out;
+		}
+	}
+	for (size_t i = 0; i < n; i++) {
+		if (!take_shot(&jobs[i])) {
+			goto out;
+		}
 	}
 	ok = true;
 
 out:
-	if (frame) {
-		ext_image_copy_capture_frame_v1_destroy(frame);
+	for (size_t i = n; i > 0; i--) {
+		struct job *j = &jobs[i - 1];
+		if (j->frame) {
+			ext_image_copy_capture_frame_v1_destroy(j->frame);
+		}
+		if (j->buffer) {
+			wl_buffer_destroy(j->buffer);
+		}
+		if (j->session) {
+			ext_image_copy_capture_session_v1_destroy(j->session);
+		}
+		if (j->map != MAP_FAILED) {
+			munmap(j->map, j->size);
+		}
+		if (!ok) {
+			shot_finish(j->shot);
+		}
 	}
-	if (buffer) {
-		wl_buffer_destroy(buffer);
+	return ok;
+}
+
+bool capture_outputs(struct conn *c, const struct capture_req *reqs, size_t n,
+	struct shot *shots) {
+	struct job *jobs = calloc(n, sizeof(*jobs));
+	if (!jobs) {
+		log_error("out of memory");
+		return false;
 	}
-	ext_image_copy_capture_session_v1_destroy(session);
-	if (map != MAP_FAILED) {
-		munmap(map, size);
+	bool ok = false;
+	for (size_t i = 0; i < n; i++) {
+		jobs[i] = (struct job){
+			.source =
+				ext_output_image_capture_source_manager_v1_create_source(
+					c->output_source, reqs[i].output->wl),
+			.cursor = reqs[i].cursor,
+			.name = reqs[i].output->name,
+			.shot = &shots[i],
+		};
+		if (!jobs[i].source) {
+			log_error("out of memory");
+			goto out;
+		}
 	}
+	ok = run(c, jobs, n);
+
+out:
+	for (size_t i = n; i > 0; i--) {
+		if (jobs[i - 1].source) {
+			ext_image_capture_source_v1_destroy(jobs[i - 1].source);
+		}
+	}
+	free(jobs);
 	return ok;
 }
 
 bool capture_output(struct conn *c, const struct output *o, bool cursor,
 	struct shot *shot) {
-	struct ext_image_capture_source_v1 *source =
-		ext_output_image_capture_source_manager_v1_create_source(
-			c->output_source, o->wl);
-	if (!source) {
-		log_error("out of memory");
-		return false;
-	}
-	bool ok = run(c, source, cursor, false, o->name, shot);
-	ext_image_capture_source_v1_destroy(source);
-	return ok;
+	struct capture_req req = {o, cursor};
+	return capture_outputs(c, &req, 1, shot);
 }
 
 struct toplevels {
@@ -430,7 +526,14 @@ bool capture_window(struct conn *c, const char *identifier, bool cursor,
 		log_error("out of memory");
 		goto out;
 	}
-	ok = run(c, source, cursor, true, name, shot);
+	struct job job = {
+		.source = source,
+		.cursor = cursor,
+		.alpha = true,
+		.name = name,
+		.shot = shot,
+	};
+	ok = run(c, &job, 1);
 
 out:
 	if (source) {
@@ -444,6 +547,9 @@ out:
 }
 
 void shot_finish(struct shot *shot) {
+	if (shot->buffer) {
+		wl_buffer_destroy(shot->buffer);
+	}
 	free(shot->heap);
 	if (shot->map) {
 		munmap(shot->map, shot->map_len);

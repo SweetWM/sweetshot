@@ -9,13 +9,22 @@ struct shot {
 	void *map;
 	size_t map_len;
 	uint8_t *heap; // transformed copy, NULL for a normal transform
+	// the capture's own buffer, showable as is with this buffer transform
+	struct wl_buffer *buffer;
+	uint32_t transform;
 };
 
-// captures the whole output, reports the error and returns false on failure
+struct capture_req {
+	const struct output *output;
+	bool cursor;
+};
+
+bool capture_outputs(struct conn *c, const struct capture_req *reqs, size_t n,
+	struct shot *shots);
+
+// capture_outputs for one output
 bool capture_output(
 	struct conn *c, const struct output *o, bool cursor, struct shot *shot);
-// captures the toplevel whose ext-foreign-toplevel identifier is
-// `identifier`, isolated, with alpha. Never falls back to another window
 bool capture_window(
 	struct conn *c, const char *identifier, bool cursor, struct shot *shot);
 
