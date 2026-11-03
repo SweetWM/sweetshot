@@ -1,5 +1,6 @@
 #include "chip.h"
 
+#include "icon.h"
 #include "log.h"
 #include "viewporter-client-protocol.h"
 
@@ -10,11 +11,8 @@
 #include <unistd.h>
 
 enum {
-	SIDE = 32, // logical px
-	GAP = 16,  // from the pointer
-	// numbers past this draw no digits (draw.c)
-	BADGES = 99,
-	SQUIGGLE = 13,
+	SIDE = ICON_SIDE, // logical px, one icon unit each
+	GAP = 16,	  // from the pointer
 };
 
 struct chip {
@@ -32,88 +30,6 @@ struct chip {
 	bool mapped;
 	bool dirty;
 };
-
-static struct raster_point at(float x, float y, float f) {
-	return (struct raster_point){x * f, y * f};
-}
-
-static size_t glyph(const struct chip_look *l, float f, struct draw_op *ops,
-	struct raster_point *squiggle) {
-	struct draw_op op = {
-		.kind = l->kind,
-		.color = l->color,
-		.fill = l->fill,
-		.width = fminf(l->size, 6.0f) * f,
-		.a = at(8, 24, f),
-		.b = at(24, 8, f),
-	};
-	switch (l->kind) {
-	case DRAW_ARROW:
-		// the head is 4× the width
-		op.width = fminf(l->size, 3.0f) * f;
-		break;
-	case DRAW_LINE:
-		break;
-	case DRAW_RECT:
-		op.width = fminf(l->size, 4.0f) * f;
-		op.a = at(8, 8, f);
-		op.b = at(24, 24, f);
-		break;
-	case DRAW_ELLIPSE:
-		op.width = fminf(l->size, 4.0f) * f;
-		op.a = at(6, 9, f);
-		op.b = at(26, 23, f);
-		break;
-	case DRAW_PEN:
-		for (int i = 0; i < SQUIGGLE; i++) {
-			squiggle[i] = at(6.0f + (float)i * 20.0f / 12.0f,
-				16.0f - 6.0f * sinf((float)i * 0.5236f), f);
-		}
-		op.pts = squiggle;
-		op.n_pts = SQUIGGLE;
-		break;
-	case DRAW_HIGHLIGHT:
-		// a marker stroke; multiply would vanish on the dark backdrop
-		op.kind = DRAW_RECT;
-		op.fill = true;
-		op.a = at(6, 11, f);
-		op.b = at(26, 21, f);
-		break;
-	case DRAW_PIXELATE:
-		// a 2×2 mosaic, it has no colour of its own
-		for (int i = 0; i < 4; i++) {
-			float x = i % 2 ? 16.0f : 8.0f;
-			float y = i < 2 ? 8.0f : 16.0f;
-			ops[i] = (struct draw_op){
-				.kind = DRAW_RECT,
-				.color = i == 0 || i == 3 ? 0xbbbbbb : 0x666666,
-				.fill = true,
-				.a = at(x, y, f),
-				.b = at(x + 8, y + 8, f),
-			};
-		}
-		return 4;
-	case DRAW_BADGE: {
-		// badges are numbered by the badges before them, so the
-		// next number takes that many invisible ones
-		uint32_t before = l->badge > 0 ? l->badge - 1 : 0;
-		before = before > BADGES ? BADGES : before;
-		for (uint32_t i = 0; i < before; i++) {
-			ops[i] = (struct draw_op){
-				.kind = DRAW_BADGE,
-				.width = 1,
-				.a = {-1000, -1000},
-			};
-		}
-		op.width = fminf(l->size, 4.5f) * f;
-		op.a = at(16, 16, f);
-		ops[before] = op;
-		return before + 1;
-	}
-	}
-	ops[0] = op;
-	return 1;
-}
 
 static struct wl_buffer *render(
 	struct chip *k, const struct chip_look *look, double scale) {
@@ -139,9 +55,17 @@ static struct wl_buffer *render(
 		memcpy(bg + i, (const uint8_t[]){0, 0, 0, 0x99}, 4);
 	}
 	struct png_image src = {n, n, stride, PNG_ARGB8888, bg};
-	struct draw_op ops[BADGES + 1];
-	struct raster_point squiggle[SQUIGGLE];
-	size_t count = glyph(look, (float)n / SIDE, ops, squiggle);
+	struct icon ic = {
+		.type = ICON_TOOL,
+		.kind = look->kind,
+		.color = look->color,
+		.size = look->size,
+		.fill = look->fill,
+		.badge = look->badge,
+	};
+	struct draw_op ops[ICON_OPS];
+	struct raster_point pts[ICON_PTS];
+	size_t count = icon_ops(&ic, 0, 0, (float)n / SIDE, ops, pts);
 	draw_render(&src, ops, count, NULL, map, stride,
 		(struct rect){0, 0, (int32_t)n, (int32_t)n});
 	struct wl_shm_pool *pool =

@@ -12,10 +12,7 @@ enum {
 };
 
 // evdev codes are physical keys, the same on any layout
-static const struct {
-	uint32_t key;
-	enum draw_kind kind;
-} tool_keys[] = {
+const struct tool_key tool_keys[TOOL_KINDS] = {
 	{KEY_A, DRAW_ARROW},
 	{KEY_L, DRAW_LINE},
 	{KEY_R, DRAW_RECT},
@@ -210,7 +207,7 @@ struct rect tool_key(struct tool *t, uint32_t key, bool ctrl, bool shift) {
 	if (t->dragging) {
 		return (struct rect){0};
 	}
-	for (size_t i = 0; i < sizeof(tool_keys) / sizeof(tool_keys[0]); i++) {
+	for (size_t i = 0; i < TOOL_KINDS; i++) {
 		if (tool_keys[i].key == key) {
 			t->kind = tool_keys[i].kind;
 		}
