@@ -40,6 +40,7 @@ executable(
 	'src/clip.c',
 	'src/draw.c',
 	'src/edit.c',
+	'src/icon.c',
 	'src/input.c',
 	'src/log.c',
 	'src/png.c',

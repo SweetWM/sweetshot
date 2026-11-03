@@ -3,6 +3,16 @@
 
 #include "draw.h"
 
+enum { TOOL_KINDS = 8 };
+
+struct tool_key {
+	uint32_t key; // evdev code
+	enum draw_kind kind;
+};
+
+// A L R E D H X N, in toolbar order
+extern const struct tool_key tool_keys[TOOL_KINDS];
+
 struct tool {
 	struct draw_ops ops;
 	struct draw_op live;
