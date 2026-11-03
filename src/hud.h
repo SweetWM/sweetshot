@@ -1,6 +1,7 @@
 #ifndef SWEETSHOT_HUD_H
 #define SWEETSHOT_HUD_H
 
+#include "bar.h"
 #include "tool.h"
 #include "wl.h"
 
@@ -17,7 +18,8 @@ struct hud_view {
 	struct rect image; // where the image is shown
 	double px;	   // the pointer
 	double py;
-	bool chip; // the pointer is over the image and not dragging
+	bool chip;  // the pointer is over the image and not dragging
+	bool hover; // the pointer is on the layer and not dragging
 };
 
 // both hidden until the first hud_update; reports the error and returns
@@ -31,6 +33,12 @@ bool hud_update(struct hud *h, const struct hud_view *v);
 
 // Tab: hide or show the toolbar
 void hud_toggle(struct hud *h);
+
+// x, y is on the shown toolbar
+bool hud_on_bar(const struct hud *h, double x, double y);
+
+bool hud_click(
+	struct hud *h, double x, double y, bool pressed, struct bar_action *a);
 
 bool hud_dirty(const struct hud *h);
 
