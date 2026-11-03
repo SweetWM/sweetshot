@@ -25,6 +25,11 @@ struct input_listener {
 	void (*wheel)(void *data, int32_t steps);
 };
 
+enum input_cursor {
+	INPUT_CROSSHAIR, // set on every pointer enter
+	INPUT_DEFAULT,
+};
+
 struct input;
 
 // binds the seat's pointer and keyboard, reports the error and returns NULL
@@ -33,5 +38,9 @@ struct input *input_create(
 	struct conn *c, const struct input_listener *l, void *data);
 
 void input_destroy(struct input *in);
+
+// the pointer's shape until it changes or the next enter; sends nothing
+// when it is already that shape
+void input_set_cursor(struct input *in, enum input_cursor c);
 
 #endif

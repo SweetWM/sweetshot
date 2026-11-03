@@ -24,8 +24,21 @@ struct hud {
 	double bar_scale; // of the bar's picture, 0 before the first
 	struct icon look;
 	double chip_scale;
+	struct rect at; // the bar on the layer, logical
 	bool hidden;
+	bool pressing; // a left press started on the bar
+	int pressed;   // its button, or -1 for a gap
 };
+
+static bool on_bar(const struct hud *h, double x, double y) {
+	return !h->hidden && x >= h->at.x && x < h->at.x + h->at.w &&
+	       y >= h->at.y && y < h->at.y + h->at.h;
+}
+
+static int button_at(const struct hud *h, double x, double y) {
+	return on_bar(h, x, y) ? bar_hit(&h->bar, x - h->at.x, y - h->at.y)
+			       : -1;
+}
 
 static uint32_t pixels(int32_t logical, double scale) {
 	long px = lround(logical * scale);
@@ -85,8 +98,9 @@ bool hud_update(struct hud *h, const struct hud_view *v) {
 		.fill = t->fill,
 		.can_undo = t->ops.n_active > 0,
 		.can_redo = t->ops.n_active < t->ops.n,
-		.hover = -1,
 	};
+	h->at = bar_place(&h->bar, v->image, v->lw, v->lh);
+	st.hover = v->hover ? button_at(h, v->px, v->py) : -1;
 	for (size_t i = 0; i < TOOL_KINDS; i++) {
 		st.tool = tool_keys[i].kind == t->kind ? i : st.tool;
 	}
@@ -94,8 +108,7 @@ bool hud_update(struct hud *h, const struct hud_view *v) {
 		!draw_bar(h, &st, v->scale)) {
 		return false;
 	}
-	struct rect at = bar_place(&h->bar, v->image, v->lw, v->lh);
-	sprite_move(h->bar_sprite, at.x, at.y, !h->hidden);
+	sprite_move(h->bar_sprite, h->at.x, h->at.y, !h->hidden);
 
 	struct icon look = {
 		.type = ICON_TOOL,
@@ -114,9 +127,32 @@ bool hud_update(struct hud *h, const struct hud_view *v) {
 	int32_t y = (int32_t)floor(v->py) + GAP;
 	x = x + CHIP > v->lw ? x - 2 * GAP - CHIP : x;
 	y = y + CHIP > v->lh ? y - 2 * GAP - CHIP : y;
-	bool over_bar = !h->hidden && v->px >= at.x && v->px < at.x + at.w &&
-			v->py >= at.y && v->py < at.y + at.h;
-	sprite_move(h->chip, x, y, v->chip && !over_bar);
+	sprite_move(h->chip, x, y, v->chip && !on_bar(h, v->px, v->py));
+	return true;
+}
+
+bool hud_on_bar(const struct hud *h, double x, double y) {
+	return on_bar(h, x, y);
+}
+
+bool hud_click(
+	struct hud *h, double x, double y, bool pressed, struct bar_action *a) {
+	*a = (struct bar_action){.size = -1};
+	if (pressed) {
+		if (!on_bar(h, x, y)) {
+			return false;
+		}
+		h->pressing = true;
+		h->pressed = button_at(h, x, y);
+		return true;
+	}
+	if (!h->pressing) {
+		return false;
+	}
+	h->pressing = false;
+	if (h->pressed >= 0 && button_at(h, x, y) == h->pressed) {
+		*a = bar_action(&h->bar, h->pressed);
+	}
 	return true;
 }
 

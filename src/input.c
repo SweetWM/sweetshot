@@ -13,11 +13,12 @@ struct input {
 	struct wl_pointer *pointer;
 	struct wl_keyboard *keyboard;
 	struct wp_cursor_shape_device_v1 *shape;
-	uint32_t held; // mod_bit() of each modifier key that is down
+	uint32_t
+		enter; // serial of the latest pointer enter, set_shape needs it
+	enum input_cursor cursor;
+	uint32_t held;
 };
 
-// shift and Ctrl are tracked from their own key events: modifier masks are
-// keymap indices, which need xkbcommon to interpret
 static uint32_t mod_bit(uint32_t key) {
 	switch (key) {
 	case KEY_LEFTSHIFT:
@@ -52,11 +53,24 @@ static void pointer_enter(void *data, struct wl_pointer *pointer,
 	wl_fixed_t y) {
 	(void)pointer;
 	struct input *in = data;
-	in->l->enter(in->data, surface, x, y);
+	in->enter = serial;
 	if (in->shape) {
 		wp_cursor_shape_device_v1_set_shape(in->shape, serial,
 			WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CROSSHAIR);
 	}
+	in->cursor = INPUT_CROSSHAIR;
+	// after the crosshair, so the owner can change it
+	in->l->enter(in->data, surface, x, y);
+}
+
+void input_set_cursor(struct input *in, enum input_cursor c) {
+	if (!in->shape || c == in->cursor) {
+		return;
+	}
+	wp_cursor_shape_device_v1_set_shape(in->shape, in->enter,
+		c == INPUT_DEFAULT ? WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT
+				   : WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CROSSHAIR);
+	in->cursor = c;
 }
 
 static void pointer_leave(void *data, struct wl_pointer *pointer,

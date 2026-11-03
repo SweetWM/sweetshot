@@ -266,12 +266,15 @@ static void update_hud(struct editor *e) {
 		.px = e->px,
 		.py = e->py,
 		.chip = e->over && !e->tool.dragging && pointer_image(e, &p),
+		.hover = e->over && !e->tool.dragging,
 	};
 	if (!hud_update(e->hud, &v)) {
 		// reported
 		e->state = FAILED;
 		return;
 	}
+	bool arrow = v.hover && hud_on_bar(e->hud, e->px, e->py);
+	input_set_cursor(e->input, arrow ? INPUT_DEFAULT : INPUT_CROSSHAIR);
 	redraw(e);
 }
 
@@ -311,13 +314,43 @@ static void on_motion(void *data, wl_fixed_t x, wl_fixed_t y) {
 	update_hud(e);
 }
 
+// a key, or a toolbar button standing for one
+static void act(struct editor *e, uint32_t key, uint32_t mods) {
+	if (key == KEY_ESC) {
+		e->state = CANCELLED;
+	} else if (key == KEY_ENTER || key == KEY_KPENTER) {
+		e->state = DONE;
+	} else if (key == KEY_TAB) {
+		hud_toggle(e->hud);
+	} else {
+		damage(e, tool_key(&e->tool, key, mods & INPUT_CTRL,
+				  mods & INPUT_SHIFT));
+	}
+	update_hud(e);
+}
+
 static void on_button(void *data, uint32_t button, bool pressed) {
 	struct editor *e = data;
 	struct tool *t = &e->tool;
 	struct raster_point p;
 	struct rect r = {0};
+	struct bar_action a;
 	bool ok = true;
 	if (e->state != EDITING || e->lw == 0) {
+		return;
+	}
+	// a press on the toolbar never starts a shape; a shape dragged onto
+	// it still ends normally
+	if (button == BTN_LEFT && !t->dragging &&
+		hud_click(e->hud, e->px, e->py, pressed, &a)) {
+		uint32_t mods =
+			(a.ctrl ? INPUT_CTRL : 0) | (a.shift ? INPUT_SHIFT : 0);
+		tool_resize(t, a.size >= 0 ? a.size - (int)t->size : 0);
+		if (a.key) {
+			act(e, a.key, mods);
+		} else {
+			update_hud(e);
+		}
 		return;
 	}
 	if (button == BTN_LEFT && pressed && !t->dragging && e->over &&
@@ -338,20 +371,8 @@ static void on_button(void *data, uint32_t button, bool pressed) {
 static void on_key(void *data, uint32_t key, uint32_t mods) {
 	struct editor *e = data;
 	e->mods = mods;
-	if (e->state != EDITING) {
-		return;
-	}
-	if (key == KEY_ESC) {
-		e->state = CANCELLED;
-	} else if (key == KEY_ENTER || key == KEY_KPENTER) {
-		e->state = DONE;
-	} else if (key == KEY_TAB) {
-		hud_toggle(e->hud);
-		update_hud(e);
-	} else {
-		damage(e, tool_key(&e->tool, key, mods & INPUT_CTRL,
-				  mods & INPUT_SHIFT));
-		update_hud(e);
+	if (e->state == EDITING) {
+		act(e, key, mods);
 	}
 }
 
