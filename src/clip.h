@@ -6,12 +6,21 @@
 #include <stddef.h>
 #include <stdint.h>
 
+enum { CLIP_TRANSFERS = 16 };
+
+struct transfer {
+	int fd;
+	size_t done; // bytes of the png written so far
+};
+
 struct clip {
 	struct conn *conn;
 	const uint8_t *png;
 	size_t len;
 	struct ext_data_control_device_v1 *device;
 	struct ext_data_control_source_v1 *source;
+	struct transfer transfers[CLIP_TRANSFERS];
+	size_t n_transfers;
 	bool cancelled; // another client took the selection, or no device
 };
 
