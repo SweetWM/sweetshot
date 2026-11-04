@@ -46,13 +46,18 @@ struct editor {
 	struct wl_surface *img; // the picture, synchronized subsurface
 	struct wl_subsurface *sub;
 	struct wp_viewport *img_viewport;
+	struct wl_surface *back; // in.backdrop, below the layer's dim
+	struct wl_subsurface *back_sub;
+	struct wp_viewport *back_viewport;
 	struct hud *hud; // toolbar and chip, above the picture
 	struct buf bufs[2];
 	int front; // the buffer last attached, or drawn first
 	uint8_t *map;
 	size_t map_len;
 	struct wl_callback *frame;
-	int32_t lw; // layer size from configure, 0 until the first
+	bool shown;    // a frame callback came back
+	bool borrowed; // the picture shows in.backdrop, not bufs
+	int32_t lw;    // layer size from configure, 0 until the first
 	int32_t lh;
 	struct place place;
 	struct rect pending; // changed since the last commit
@@ -123,6 +128,14 @@ static void redraw(struct editor *e) {
 	}
 	if (image) {
 		render(e, back, e->bufs[back].stale);
+		if (e->borrowed) {
+			wl_surface_set_buffer_transform(
+				e->img, WL_OUTPUT_TRANSFORM_NORMAL);
+			wp_viewport_set_source(e->img_viewport,
+				wl_fixed_from_int(-1), wl_fixed_from_int(-1),
+				wl_fixed_from_int(-1), wl_fixed_from_int(-1));
+			e->borrowed = false;
+		}
 		attach(e, back, e->pending);
 		wl_surface_commit(e->img);
 		e->pending = (struct rect){0};
@@ -154,6 +167,7 @@ static void frame_done(void *data, struct wl_callback *cb, uint32_t time) {
 	struct editor *e = data;
 	wl_callback_destroy(cb);
 	e->frame = NULL;
+	e->shown = true;
 	redraw(e);
 }
 
@@ -207,11 +221,37 @@ static void layer_configure(void *data, struct zwlr_layer_surface_v1 *layer,
 	wp_viewport_set_destination(e->viewport, e->lw, e->lh);
 	wl_subsurface_set_position(e->sub, at.x, at.y);
 	wp_viewport_set_destination(e->img_viewport, at.w, at.h);
+	if (e->back) {
+		wp_viewport_set_destination(e->back_viewport, e->lw, e->lh);
+	}
 	if (first) {
 		wl_surface_attach(e->surface, e->dim, 0, 0);
 		wl_surface_damage_buffer(e->surface, 0, 0, 1, 1);
+	}
+	if (first && !e->back) {
 		render(e, 0, e->whole);
 		attach(e, 0, e->whole);
+	}
+	if (first && e->back) {
+		wl_surface_attach(e->back, e->in.backdrop, 0, 0);
+		wl_surface_set_buffer_transform(
+			e->back, (int32_t)e->in.backdrop_transform);
+		wl_surface_damage_buffer(e->back, 0, 0, INT32_MAX, INT32_MAX);
+		struct rect r = e->in.backdrop_crop;
+		wl_surface_attach(e->img, e->in.backdrop, 0, 0);
+		wl_surface_set_buffer_transform(
+			e->img, (int32_t)e->in.backdrop_transform);
+		wp_viewport_set_source(e->img_viewport, wl_fixed_from_int(r.x),
+			wl_fixed_from_int(r.y), wl_fixed_from_int(r.w),
+			wl_fixed_from_int(r.h));
+		wl_surface_damage_buffer(e->img, 0, 0, INT32_MAX, INT32_MAX);
+		e->borrowed = true;
+		e->front = 1;
+		e->pending = e->whole;
+		e->dirty = true;
+	}
+	if (e->back) {
+		wl_surface_commit(e->back);
 	}
 	// the toolbar lands in the same commit as the picture: with a frame
 	// pending, update_hud only prepares it
@@ -418,6 +458,18 @@ static void unmap(struct editor *e) {
 	}
 	hud_destroy(e->hud);
 	e->hud = NULL;
+	if (e->back_viewport) {
+		wp_viewport_destroy(e->back_viewport);
+		e->back_viewport = NULL;
+	}
+	if (e->back_sub) {
+		wl_subsurface_destroy(e->back_sub);
+		e->back_sub = NULL;
+	}
+	if (e->back) {
+		wl_surface_destroy(e->back);
+		e->back = NULL;
+	}
 	if (e->img_viewport) {
 		wp_viewport_destroy(e->img_viewport);
 		e->img_viewport = NULL;
@@ -556,6 +608,22 @@ struct editor *edit_create(struct conn *c, const struct edit_input *in) {
 	}
 	// pointer input always lands on the layer, in its coordinates
 	wl_surface_set_input_region(e->img, e->no_input);
+	if (in->backdrop) {
+		e->back = wl_compositor_create_surface(c->compositor);
+		e->back_sub =
+			e->back ? wl_subcompositor_get_subsurface(
+					  c->subcompositor, e->back, e->surface)
+				: NULL;
+		e->back_viewport = e->back ? wp_viewporter_get_viewport(
+						     c->viewporter, e->back)
+					   : NULL;
+		if (!e->back_sub || !e->back_viewport) {
+			goto oom;
+		}
+		// the dim is the layer's own buffer, the backdrop goes under it
+		wl_subsurface_place_below(e->back_sub, e->surface);
+		wl_surface_set_input_region(e->back, e->no_input);
+	}
 	// reports its own error
 	e->hud = hud_create(c, e->surface, e->no_input);
 	if (!e->hud || !add_buffers(e)) {
@@ -574,6 +642,15 @@ oom:
 fail:
 	edit_destroy(e);
 	return NULL;
+}
+
+bool edit_wait_shown(struct editor *e) {
+	while (!e->shown && e->state == EDITING) {
+		if (wl_display_dispatch(e->conn->display) < 0) {
+			fail(e, "lost the Wayland connection");
+		}
+	}
+	return e->state != FAILED;
 }
 
 enum edit_result edit_run(struct editor *e, struct png_image *view) {
