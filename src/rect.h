@@ -12,9 +12,12 @@ struct rect {
 };
 
 enum {
-	RECT_DIMS = 4,	// dim above, below, left and right of the selection
-	RECT_PARTS = 8, // then outline top, bottom, left and right
+	RECT_DIMS = 4,
+	RECT_PARTS = 8,
+	RECT_CLICK_SLOP = 3,
 };
+
+int32_t rect_clamp(int32_t v, int32_t lo, int32_t hi);
 
 // the dim and outline rectangles of a w×h output, sel NULL dims all of it.
 // Empty rectangles stay unmapped

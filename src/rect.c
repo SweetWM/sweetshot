@@ -1,6 +1,6 @@
 #include "rect.h"
 
-static int32_t clamp(int32_t v, int32_t lo, int32_t hi) {
+int32_t rect_clamp(int32_t v, int32_t lo, int32_t hi) {
 	return v < lo ? lo : v > hi ? hi : v;
 }
 
@@ -32,11 +32,11 @@ void rect_layout(
 struct rect rect_nudge(struct rect r, int32_t dx, int32_t dy, bool resize,
 	int32_t w, int32_t h) {
 	if (resize) {
-		r.w = clamp(r.w + dx, 1, w - r.x);
-		r.h = clamp(r.h + dy, 1, h - r.y);
+		r.w = rect_clamp(r.w + dx, 1, w - r.x);
+		r.h = rect_clamp(r.h + dy, 1, h - r.y);
 	} else {
-		r.x = clamp(r.x + dx, 0, w - r.w);
-		r.y = clamp(r.y + dy, 0, h - r.h);
+		r.x = rect_clamp(r.x + dx, 0, w - r.w);
+		r.y = rect_clamp(r.y + dy, 0, h - r.h);
 	}
 	return r;
 }
@@ -74,10 +74,12 @@ static int32_t scale_round(int32_t v, uint32_t pixels, int32_t logical) {
 
 struct rect rect_physical(
 	struct rect r, int32_t lw, int32_t lh, uint32_t iw, uint32_t ih) {
-	int32_t x0 = clamp(scale_round(r.x, iw, lw), 0, (int32_t)iw - 1);
-	int32_t y0 = clamp(scale_round(r.y, ih, lh), 0, (int32_t)ih - 1);
-	int32_t x1 = clamp(scale_round(r.x + r.w, iw, lw), x0 + 1, (int32_t)iw);
-	int32_t y1 = clamp(scale_round(r.y + r.h, ih, lh), y0 + 1, (int32_t)ih);
+	int32_t x0 = rect_clamp(scale_round(r.x, iw, lw), 0, (int32_t)iw - 1);
+	int32_t y0 = rect_clamp(scale_round(r.y, ih, lh), 0, (int32_t)ih - 1);
+	int32_t x1 =
+		rect_clamp(scale_round(r.x + r.w, iw, lw), x0 + 1, (int32_t)iw);
+	int32_t y1 =
+		rect_clamp(scale_round(r.y + r.h, ih, lh), y0 + 1, (int32_t)ih);
 	return (struct rect){x0, y0, x1 - x0, y1 - y0};
 }
 
@@ -131,8 +133,8 @@ struct place rect_place_center(uint32_t iw, uint32_t ih, int32_t lw, int32_t lh,
 	}
 	int32_t aw = (int32_t)(w + 0.5);
 	int32_t ah = (int32_t)(h + 0.5);
-	aw = clamp(aw, 1, lw);
-	ah = clamp(ah, 1, lh);
+	aw = rect_clamp(aw, 1, lw);
+	ah = rect_clamp(ah, 1, lh);
 	struct rect at = {(lw - aw) / 2, (lh - ah) / 2, aw, ah};
 	double sx = (double)iw / aw;
 	double sy = (double)ih / ah;

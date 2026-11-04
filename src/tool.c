@@ -6,9 +6,6 @@
 enum {
 	COLOR_DEFAULT = 0, // red
 	SIZE_DEFAULT = 2,  // 4 logical px
-	// a badge press that moves this far, in logical px, is not a click
-	// (as the selector)
-	CLICK_SLOP = 3,
 };
 
 // evdev codes are physical keys, the same on any layout
@@ -103,7 +100,7 @@ bool tool_drag(struct tool *t, struct raster_point p, bool constrain,
 	}
 	if (op->kind == DRAW_BADGE) {
 		// badges are placed by a click; a drag cancels it
-		float slop = (float)CLICK_SLOP * t->scale;
+		float slop = (float)RECT_CLICK_SLOP * t->scale;
 		if (fabsf(p.x - op->a.x) >= slop ||
 			fabsf(p.y - op->a.y) >= slop) {
 			*damage = tool_drop(t);

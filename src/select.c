@@ -11,10 +11,6 @@
 #include <linux/input-event-codes.h>
 #include <stdlib.h>
 
-// a press and release closer than this, in logical px, selects the whole
-// output
-enum { CLICK_SLOP = 3 };
-
 struct part {
 	struct wl_surface *surface;
 	struct wl_subsurface *sub;
@@ -45,6 +41,7 @@ enum state {
 	CONFIRMED,
 	CANCELLED,
 	CLOSED,
+	FAILED, // reported already
 };
 
 struct selector {
@@ -76,13 +73,15 @@ static const struct wl_callback_listener frame_listener = {
 	.done = frame_done,
 };
 
-static bool request_frame(struct overlay *o) {
+// without the callback nothing would pace the next redraw
+static void request_frame(struct overlay *o) {
 	o->frame = wl_surface_frame(o->surface);
 	if (!o->frame) {
-		return false;
+		log_error("out of memory");
+		o->sel->state = FAILED;
+		return;
 	}
 	wl_callback_add_listener(o->frame, &frame_listener, o);
-	return true;
 }
 
 static struct wl_buffer *wanted(const struct overlay *o) {
@@ -214,10 +213,6 @@ static int32_t fixed_floor(wl_fixed_t v) {
 	return v >= 0 ? v / 256 : -((-v + 255) / 256);
 }
 
-static int32_t clamp(int32_t v, int32_t hi) {
-	return v < 0 ? 0 : v > hi ? hi : v;
-}
-
 static void on_enter(
 	void *data, struct wl_surface *surface, wl_fixed_t x, wl_fixed_t y) {
 	struct selector *s = data;
@@ -240,16 +235,13 @@ static void on_motion(void *data, wl_fixed_t x, wl_fixed_t y) {
 	struct selector *s = data;
 	s->px = fixed_floor(x);
 	s->py = fixed_floor(y);
-	// the compositor's implicit grab keeps motion on the surface the drag
-	// started on, in its coordinates; clamping keeps the drag on that
-	// output
 	struct overlay *o = s->drag_o;
 	if (!o || s->hover != o || s->state != SELECTING) {
 		return;
 	}
 	set_sel(s, o,
-		rect_span(s->drag_x, s->drag_y, clamp(s->px, o->w),
-			clamp(s->py, o->h)));
+		rect_span(s->drag_x, s->drag_y, rect_clamp(s->px, 0, o->w),
+			rect_clamp(s->py, 0, o->h)));
 }
 
 static void on_button(void *data, uint32_t button, bool pressed) {
@@ -263,14 +255,15 @@ static void on_button(void *data, uint32_t button, bool pressed) {
 			return;
 		}
 		s->drag_o = o;
-		s->drag_x = clamp(s->px, o->w);
-		s->drag_y = clamp(s->py, o->h);
+		s->drag_x = rect_clamp(s->px, 0, o->w);
+		s->drag_y = rect_clamp(s->py, 0, o->h);
 		set_sel(s, o, (struct rect){s->drag_x, s->drag_y, 0, 0});
 	} else if (s->drag_o) {
 		o = s->drag_o;
 		s->drag_o = NULL;
-		if (abs(s->px - s->drag_x) < CLICK_SLOP &&
-			abs(s->py - s->drag_y) < CLICK_SLOP) {
+		// a click selects the whole output
+		if (abs(s->px - s->drag_x) < RECT_CLICK_SLOP &&
+			abs(s->py - s->drag_y) < RECT_CLICK_SLOP) {
 			set_sel(s, o, whole(o));
 		}
 	}
@@ -450,9 +443,8 @@ struct selector *select_create(struct conn *c, bool cursor, struct capture *cap,
 	}
 	s->overlays = calloc(wl_list_length(&c->outputs), sizeof(*s->overlays));
 	struct wp_single_pixel_buffer_manager_v1 *sp = c->single_pixel;
-	// premultiplied black at ~45%
 	s->dim = wp_single_pixel_buffer_manager_v1_create_u32_rgba_buffer(
-		sp, 0, 0, 0, 0x73333333);
+		sp, 0, 0, 0, OVERLAY_DIM_ALPHA);
 	s->white = wp_single_pixel_buffer_manager_v1_create_u32_rgba_buffer(
 		sp, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX);
 	s->no_input = wl_compositor_create_region(c->compositor);
@@ -501,8 +493,9 @@ enum select_result select_run(struct selector *s, struct choice *choice) {
 			return SELECT_FAILED;
 		}
 	}
-	if (s->state == CANCELLED) {
-		return SELECT_CANCELLED;
+	// a redraw at the end of a dispatch can fail without failing it
+	if (s->state != CONFIRMED) {
+		return s->state == CANCELLED ? SELECT_CANCELLED : SELECT_FAILED;
 	}
 	// the chosen variant may still be on its way; any capture failing
 	// fails the command, as it would have before the selector

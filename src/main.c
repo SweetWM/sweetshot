@@ -170,15 +170,18 @@ static int shoot_window(
 	if (!capture_window(c, f.identifier, a->cursor, &shot)) {
 		return 1;
 	}
-	// edited on the window's output
-	struct output *o = output_named(c, f.output);
-	struct edit_input in = {
-		.output = o ? o : first_output(c),
-		.image = shot.image,
-		.fit = EDIT_WINDOW,
-	};
-	return encode(&shot, &shot.image, a->edit,
-		a->edit ? edit_create(c, &in) : NULL, png, len);
+	struct editor *e = NULL;
+	if (a->edit) {
+		// edited on the window's output
+		struct output *o = output_named(c, f.output);
+		struct edit_input in = {
+			.output = o ? o : first_output(c),
+			.image = shot.image,
+			.fit = EDIT_WINDOW,
+		};
+		e = edit_create(c, &in);
+	}
+	return encode(&shot, &shot.image, a->edit, e, png, len);
 }
 
 // region crops one frozen output: every output is captured at launch, with
