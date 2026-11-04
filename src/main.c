@@ -77,7 +77,8 @@ static struct output *first_output(struct conn *c) {
 static struct output *output_named(struct conn *c, const char *name) {
 	struct output *o;
 	wl_list_for_each(o, &c->outputs, link) {
-		if (name && strcmp(o->name, name) == 0) {
+		// one plugged in while capturing has no name yet
+		if (name && o->name && strcmp(o->name, name) == 0) {
 			return o;
 		}
 	}
@@ -102,7 +103,6 @@ static struct output *find_output(struct conn *c, const char *name) {
 	log_error("no output named \"%s\" (available: %s)", name, list);
 	return NULL;
 }
-
 
 static int encode(struct shot *shot, const struct png_image *img, bool edit,
 	struct editor *e, uint8_t **png, size_t *len) {
