@@ -265,7 +265,6 @@ static bool request_frame(struct conn *c, struct job *j) {
 	return true;
 }
 
-// the frame's pixels become the shot, which takes over map and buffer
 static bool take_shot(struct job *j) {
 	const struct state *st = &j->st;
 	if (st->transform > WL_OUTPUT_TRANSFORM_FLIPPED_270) {
@@ -290,15 +289,6 @@ static bool take_shot(struct job *j) {
 	};
 	j->map = MAP_FAILED;
 	j->buffer = NULL;
-	if (st->transform != WL_OUTPUT_TRANSFORM_NORMAL) {
-		shot->heap = malloc(j->size);
-		if (!shot->heap) {
-			log_error("out of memory");
-			return false;
-		}
-		shot->image =
-			png_upright(&shot->image, st->transform, shot->heap);
-	}
 	return true;
 }
 
@@ -405,8 +395,6 @@ void capture_destroy(struct capture *cap) {
 	free(cap);
 }
 
-// dispatches until the batch is done, then destroys it; on failure every
-// shot is finished
 static bool capture_wait(struct capture *cap) {
 	bool ok = cap != NULL;
 	while (ok && capture_status(cap) == CAPTURE_PENDING) {
@@ -416,6 +404,9 @@ static bool capture_wait(struct capture *cap) {
 		}
 	}
 	ok = ok && capture_status(cap) == CAPTURE_DONE;
+	for (size_t i = 0; ok && i < cap->n; i++) {
+		ok = shot_upright(cap->jobs[i].shot);
+	}
 	if (cap && !ok) {
 		for (size_t i = 0; i < cap->n; i++) {
 			shot_finish(cap->jobs[i].shot);
@@ -546,6 +537,20 @@ out:
 	}
 	ext_foreign_toplevel_list_v1_destroy(list);
 	return ok;
+}
+
+bool shot_upright(struct shot *shot) {
+	// a normal transform is upright already, the no-copy path
+	if (shot->transform == WL_OUTPUT_TRANSFORM_NORMAL || shot->heap) {
+		return true;
+	}
+	shot->heap = malloc(shot->map_len);
+	if (!shot->heap) {
+		log_error("out of memory");
+		return false;
+	}
+	shot->image = png_upright(&shot->image, shot->transform, shot->heap);
+	return true;
 }
 
 void shot_finish(struct shot *shot) {

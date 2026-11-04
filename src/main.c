@@ -216,6 +216,11 @@ static int shoot_region(
 	struct png_image img = {0};
 	struct rect px = {0};
 	struct editor *e = NULL;
+	// the selector showed every shot through its buffer transform, so only
+	// the chosen one is copied upright, and not before the choice
+	if (r == SELECT_CONFIRMED && !shot_upright(ch.shot)) {
+		r = SELECT_FAILED;
+	}
 	if (r == SELECT_CONFIRMED) {
 		shot = *ch.shot;
 		*ch.shot = (struct shot){0};
