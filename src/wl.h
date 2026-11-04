@@ -2,6 +2,7 @@
 #define SWEETSHOT_WL_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <wayland-client.h>
 
@@ -44,5 +45,8 @@ void conn_finish(struct conn *c);
 
 bool conn_require(
 	const struct conn *c, const struct wl_interface *const *needs);
+
+struct wl_shm_pool *conn_shm_pool(
+	const struct conn *c, size_t len, const char *what, void **map);
 
 #endif

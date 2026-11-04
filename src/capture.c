@@ -8,7 +8,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <unistd.h>
 
 struct state {
 	uint32_t width;
@@ -226,29 +225,15 @@ static bool request_frame(struct conn *c, struct job *j) {
 	uint32_t format =
 		j->argb ? WL_SHM_FORMAT_ARGB8888 : WL_SHM_FORMAT_XRGB8888;
 
-	int fd = memfd_create("sweetshot", MFD_CLOEXEC);
-	if (fd >= 0 && ftruncate(fd, (off_t)j->size) == 0) {
-		j->map = mmap(NULL, j->size, PROT_READ | PROT_WRITE, MAP_SHARED,
-			fd, 0);
-	}
-	if (j->map == MAP_FAILED) {
-		log_error("cannot allocate the shared-memory capture buffer");
-		if (fd >= 0) {
-			close(fd);
-		}
+	struct wl_shm_pool *pool = conn_shm_pool(
+		c, j->size, "the shared-memory capture buffer", &j->map);
+	if (!pool) {
 		return false;
 	}
-	// libwayland dups the fd when it sends create_pool
-	struct wl_shm_pool *pool =
-		wl_shm_create_pool(c->shm, fd, (int32_t)j->size);
-	close(fd);
-	if (pool) {
-		j->buffer =
-			wl_shm_pool_create_buffer(pool, 0, (int32_t)st->width,
-				(int32_t)st->height, (int32_t)stride, format);
-		// the buffer keeps the pool's memory alive
-		wl_shm_pool_destroy(pool);
-	}
+	j->buffer = wl_shm_pool_create_buffer(pool, 0, (int32_t)st->width,
+		(int32_t)st->height, (int32_t)stride, format);
+	// the buffer keeps the pool's memory alive
+	wl_shm_pool_destroy(pool);
 	j->frame = j->buffer ? ext_image_copy_capture_session_v1_create_frame(
 				       j->session)
 			     : NULL;

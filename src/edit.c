@@ -13,7 +13,6 @@
 #include <math.h>
 #include <stdlib.h>
 #include <sys/mman.h>
-#include <unistd.h>
 
 enum state {
 	EDITING,
@@ -508,31 +507,15 @@ static void unmap(struct editor *e) {
 
 // two image-size buffers in one memfd
 static bool add_buffers(struct editor *e) {
-	struct conn *c = e->conn;
 	size_t size = e->stride * (size_t)e->whole.h;
-	e->map_len = 2 * size;
-	int fd = memfd_create("sweetshot-edit", MFD_CLOEXEC);
-	void *map = MAP_FAILED;
-	if (fd >= 0 && ftruncate(fd, (off_t)e->map_len) == 0) {
-		map = mmap(NULL, e->map_len, PROT_READ | PROT_WRITE, MAP_SHARED,
-			fd, 0);
-	}
-	if (map == MAP_FAILED) {
-		log_error("cannot allocate the editor's display buffers");
-		if (fd >= 0) {
-			close(fd);
-		}
+	void *map;
+	struct wl_shm_pool *pool = conn_shm_pool(
+		e->conn, 2 * size, "the editor's display buffers", &map);
+	if (!pool) {
 		return false;
 	}
 	e->map = map;
-	// libwayland dups the fd when it sends create_pool
-	struct wl_shm_pool *pool =
-		wl_shm_create_pool(c->shm, fd, (int32_t)e->map_len);
-	close(fd);
-	if (!pool) {
-		log_error("out of memory");
-		return false;
-	}
+	e->map_len = 2 * size;
 	uint32_t format = e->in.image.format == PNG_ARGB8888
 				  ? WL_SHM_FORMAT_ARGB8888
 				  : WL_SHM_FORMAT_XRGB8888;
