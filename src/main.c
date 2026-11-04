@@ -77,8 +77,7 @@ static struct output *first_output(struct conn *c) {
 static struct output *output_named(struct conn *c, const char *name) {
 	struct output *o;
 	wl_list_for_each(o, &c->outputs, link) {
-		// one plugged in while capturing has no name yet
-		if (name && o->name && strcmp(o->name, name) == 0) {
+		if (name && strcmp(o->name, name) == 0) {
 			return o;
 		}
 	}

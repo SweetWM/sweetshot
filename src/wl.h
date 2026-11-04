@@ -9,20 +9,18 @@
 struct output {
 	struct wl_list link; // conn.outputs
 	struct wl_output *wl;
-	char *name; // wl_output v4 name, e.g. "DP-4"; NULL until sent
-	// current mode in physical pixels, not rotated; 0 until sent
+	char *name;
 	int32_t mode_w;
 	int32_t mode_h;
 	int32_t transform; // wl_output.transform
 };
 
-// one Wayland connection with every global sweetshot binds. Fields stay
-// NULL when the compositor does not offer the global
 struct conn {
 	struct wl_display *display;
 	struct wl_registry *registry;
 	struct wl_shm *shm;
 	struct wl_list outputs; // struct output.link, in advertised order
+	bool outputs_fixed;	// outputs announced from now on are ignored
 	struct wl_seat *seat;	// the first one, sweetshot never picks seats
 	uint32_t seat_caps;	// wl_seat.capabilities of seat
 	struct ext_image_copy_capture_manager_v1 *capture;
