@@ -5,11 +5,10 @@
 #include "wl.h"
 
 struct shot {
-	struct png_image image; // upright, points into map or heap
+	struct png_image image;
 	void *map;
 	size_t map_len;
-	uint8_t *heap; // transformed copy, NULL for a normal transform
-	// the capture's own buffer, showable as is with this buffer transform
+	uint8_t *heap;
 	struct wl_buffer *buffer;
 	uint32_t transform;
 };
@@ -33,11 +32,12 @@ enum capture_status capture_status(const struct capture *cap);
 // leaves the shots taken so far to the caller
 void capture_destroy(struct capture *cap);
 
-// blocking, one output; on failure the shot is finished
 bool capture_output(
 	struct conn *c, const struct output *o, bool cursor, struct shot *shot);
 bool capture_window(
 	struct conn *c, const char *identifier, bool cursor, struct shot *shot);
+
+bool shot_upright(struct shot *shot);
 
 void shot_finish(struct shot *shot);
 
