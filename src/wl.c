@@ -10,9 +10,12 @@
 #include "viewporter-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 static void output_geometry(void *data, struct wl_output *wl, int32_t x,
 	int32_t y, int32_t phys_w, int32_t phys_h, int32_t subpixel,
@@ -370,4 +373,35 @@ bool conn_require(
 		return false;
 	}
 	return true;
+}
+
+struct wl_shm_pool *conn_shm_pool(
+	const struct conn *c, size_t len, const char *what, void **map) {
+	// wl_shm pools are sized by an int32
+	if (len == 0 || len > INT32_MAX) {
+		log_error("cannot allocate %s of %zu bytes", what, len);
+		return NULL;
+	}
+	void *m = MAP_FAILED;
+	int fd = memfd_create("sweetshot", MFD_CLOEXEC);
+	if (fd >= 0 && ftruncate(fd, (off_t)len) == 0) {
+		m = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	}
+	if (m == MAP_FAILED) {
+		log_error("cannot allocate %s: %s", what, strerror(errno));
+		if (fd >= 0) {
+			close(fd);
+		}
+		return NULL;
+	}
+	// libwayland dups the fd when it sends create_pool
+	struct wl_shm_pool *pool = wl_shm_create_pool(c->shm, fd, (int32_t)len);
+	close(fd);
+	if (!pool) {
+		log_error("out of memory");
+		munmap(m, len);
+		return NULL;
+	}
+	*map = m;
+	return pool;
 }

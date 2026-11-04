@@ -5,7 +5,6 @@
 
 #include <stdlib.h>
 #include <sys/mman.h>
-#include <unistd.h>
 
 struct sprite {
 	struct conn *conn;
@@ -27,25 +26,23 @@ struct sprite {
 // compositor never reads one being drawn
 static struct wl_buffer *render(struct sprite *s, uint32_t pw, uint32_t ph,
 	uint32_t bg, const struct draw_op *ops, size_t n) {
-	struct wl_buffer *buffer = NULL;
-	uint32_t *fill = NULL;
-	void *map = MAP_FAILED;
-	size_t stride = (size_t)pw * 4;
-	size_t size = stride * ph;
-	int fd = -1;
 	if (pw == 0 || ph == 0 || pw > 16384 || ph > 16384) {
 		log_error("invalid overlay picture size %ux%u", pw, ph);
 		return NULL;
 	}
-	fd = memfd_create("sweetshot-sprite", MFD_CLOEXEC);
-	if (fd >= 0 && ftruncate(fd, (off_t)size) == 0) {
-		map = mmap(
-			NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	size_t stride = (size_t)pw * 4;
+	size_t size = stride * ph;
+	uint32_t *fill = malloc(size);
+	if (!fill) {
+		log_error("out of memory");
+		return NULL;
 	}
-	fill = malloc(size);
-	if (map == MAP_FAILED || !fill) {
-		log_error("cannot allocate an overlay picture");
-		goto out;
+	void *map;
+	struct wl_shm_pool *pool =
+		conn_shm_pool(s->conn, size, "an overlay picture", &map);
+	if (!pool) {
+		free(fill);
+		return NULL;
 	}
 	// little-endian ARGB8888 is the wl_shm byte order
 	for (size_t i = 0; i < size / 4; i++) {
@@ -54,25 +51,16 @@ static struct wl_buffer *render(struct sprite *s, uint32_t pw, uint32_t ph,
 	struct png_image src = {pw, ph, stride, PNG_ARGB8888, (uint8_t *)fill};
 	draw_render(&src, ops, n, NULL, map, stride,
 		(struct rect){0, 0, (int32_t)pw, (int32_t)ph});
-	struct wl_shm_pool *pool =
-		wl_shm_create_pool(s->conn->shm, fd, (int32_t)size);
-	if (pool) {
-		buffer = wl_shm_pool_create_buffer(pool, 0, (int32_t)pw,
-			(int32_t)ph, (int32_t)stride, WL_SHM_FORMAT_ARGB8888);
-		wl_shm_pool_destroy(pool);
-	}
+	free(fill);
+	struct wl_buffer *buffer =
+		wl_shm_pool_create_buffer(pool, 0, (int32_t)pw, (int32_t)ph,
+			(int32_t)stride, WL_SHM_FORMAT_ARGB8888);
+	// the compositor keeps the pool's memory, and nothing writes this
+	// picture again
+	wl_shm_pool_destroy(pool);
+	munmap(map, size);
 	if (!buffer) {
 		log_error("out of memory");
-	}
-
-out:
-	// the compositor keeps the pool's memory
-	free(fill);
-	if (map != MAP_FAILED) {
-		munmap(map, size);
-	}
-	if (fd >= 0) {
-		close(fd);
 	}
 	return buffer;
 }
