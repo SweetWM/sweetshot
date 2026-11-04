@@ -10,12 +10,6 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-enum result {
-	PENDING,
-	READY,
-	FAILED,
-};
-
 struct state {
 	uint32_t width;
 	uint32_t height;
@@ -23,18 +17,51 @@ struct state {
 	bool argb;
 	uint32_t formats[8]; // offered, for the error message
 	size_t n_formats;
-	bool done;
-	bool stopped;
 	uint32_t transform;
-	enum result result;
-	uint32_t reason;
 };
+
+// one capture of a batch: its shot is taken as soon as its frame is ready
+struct job {
+	struct capture *cap;
+	struct ext_image_capture_source_v1 *source;
+	bool cursor;
+	bool alpha; // prefer ARGB8888 when both formats are offered
+	const char *name;
+	struct shot *shot;
+	struct state st;
+	struct ext_image_copy_capture_session_v1 *session;
+	struct ext_image_copy_capture_frame_v1 *frame;
+	struct wl_buffer *buffer;
+	void *map;
+	size_t size;
+	bool argb;
+};
+
+struct capture {
+	struct conn *conn;
+	struct job *jobs;
+	size_t n;
+	size_t left; // shots not taken yet
+	bool failed;
+};
+
+static void report_failure(uint32_t reason, const char *name);
+static bool request_frame(struct conn *c, struct job *j);
+static bool take_shot(struct job *j);
+
+// the first failure is the one worth reporting, the rest follow from it
+static void fail(struct job *j, uint32_t reason) {
+	if (!j->cap->failed) {
+		report_failure(reason, j->name);
+	}
+	j->cap->failed = true;
+}
 
 static void session_buffer_size(void *data,
 	struct ext_image_copy_capture_session_v1 *session, uint32_t width,
 	uint32_t height) {
 	(void)session;
-	struct state *st = data;
+	struct state *st = &((struct job *)data)->st;
 	st->width = width;
 	st->height = height;
 }
@@ -42,7 +69,7 @@ static void session_buffer_size(void *data,
 static void session_shm_format(void *data,
 	struct ext_image_copy_capture_session_v1 *session, uint32_t format) {
 	(void)session;
-	struct state *st = data;
+	struct state *st = &((struct job *)data)->st;
 	st->xrgb |= format == WL_SHM_FORMAT_XRGB8888;
 	st->argb |= format == WL_SHM_FORMAT_ARGB8888;
 	if (st->n_formats < sizeof(st->formats) / sizeof(st->formats[0])) {
@@ -63,24 +90,22 @@ static void session_dmabuf_format(void *data,
 	(void)data, (void)session, (void)format, (void)modifiers;
 }
 
+// a later done (changed constraints) makes the pending frame fail, so only
+// the first one asks for a frame
 static void session_done(
 	void *data, struct ext_image_copy_capture_session_v1 *session) {
 	(void)session;
-	struct state *st = data;
-	st->done = true;
+	struct job *j = data;
+	if (!j->frame && !j->cap->failed && !request_frame(j->cap->conn, j)) {
+		j->cap->failed = true;
+	}
 }
 
+// a taken shot's session is gone, so this is always a lost capture
 static void session_stopped(
 	void *data, struct ext_image_copy_capture_session_v1 *session) {
 	(void)session;
-	struct state *st = data;
-	st->stopped = true;
-	// a stopped session never answers a pending frame
-	if (st->result == PENDING) {
-		st->result = FAILED;
-		st->reason =
-			EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED;
-	}
+	fail(data, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED);
 }
 
 static const struct ext_image_copy_capture_session_v1_listener
@@ -96,7 +121,7 @@ static const struct ext_image_copy_capture_session_v1_listener
 static void frame_transform(void *data,
 	struct ext_image_copy_capture_frame_v1 *frame, uint32_t transform) {
 	(void)frame;
-	struct state *st = data;
+	struct state *st = &((struct job *)data)->st;
 	st->transform = transform;
 }
 
@@ -113,19 +138,29 @@ static void frame_presentation_time(void *data,
 	(void)data, (void)frame, (void)sec_hi, (void)sec_lo, (void)nsec;
 }
 
+// the session's work is done: frame and session go now, which also keeps a
+// later stop (a lock) from failing a shot already taken
 static void frame_ready(
 	void *data, struct ext_image_copy_capture_frame_v1 *frame) {
-	(void)frame;
-	struct state *st = data;
-	st->result = READY;
+	struct job *j = data;
+	ext_image_copy_capture_frame_v1_destroy(frame);
+	j->frame = NULL;
+	ext_image_copy_capture_session_v1_destroy(j->session);
+	j->session = NULL;
+	if (j->cap->failed) {
+		return;
+	}
+	if (!take_shot(j)) {
+		j->cap->failed = true;
+		return;
+	}
+	j->cap->left--;
 }
 
 static void frame_failed(void *data,
 	struct ext_image_copy_capture_frame_v1 *frame, uint32_t reason) {
 	(void)frame;
-	struct state *st = data;
-	st->result = FAILED;
-	st->reason = reason;
+	fail(data, reason);
 }
 
 static const struct ext_image_copy_capture_frame_v1_listener frame_listener = {
@@ -170,57 +205,9 @@ static void report_failure(uint32_t reason, const char *name) {
 	}
 }
 
-static bool dispatch(struct conn *c) {
-	if (wl_display_dispatch(c->display) < 0) {
-		log_error("lost the Wayland connection");
-		return false;
-	}
-	return true;
-}
-
-// one capture in a batch: its source is the caller's, its shot the result
-struct job {
-	struct ext_image_capture_source_v1 *source;
-	bool cursor;
-	bool alpha; // prefer ARGB8888 when both formats are offered
-	const char *name;
-	struct shot *shot;
-	struct state st;
-	struct ext_image_copy_capture_session_v1 *session;
-	struct ext_image_copy_capture_frame_v1 *frame;
-	struct wl_buffer *buffer;
-	void *map;
-	size_t size;
-	bool argb;
-};
-
-static bool sessions_done(const struct job *jobs, size_t n) {
-	for (size_t i = 0; i < n; i++) {
-		if (!jobs[i].st.done && !jobs[i].st.stopped) {
-			return false;
-		}
-	}
-	return true;
-}
-
-static bool frames_done(const struct job *jobs, size_t n) {
-	for (size_t i = 0; i < n; i++) {
-		if (jobs[i].st.result == PENDING) {
-			return false;
-		}
-	}
-	return true;
-}
-
 // sizes the buffer from the session's constraints and asks for the frame
 static bool request_frame(struct conn *c, struct job *j) {
 	const struct state *st = &j->st;
-	if (st->stopped) {
-		report_failure(
-			EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED,
-			j->name);
-		return false;
-	}
 	if (!st->xrgb && !st->argb) {
 		report_formats(st, j->name);
 		return false;
@@ -270,7 +257,7 @@ static bool request_frame(struct conn *c, struct job *j) {
 		return false;
 	}
 	ext_image_copy_capture_frame_v1_add_listener(
-		j->frame, &frame_listener, &j->st);
+		j->frame, &frame_listener, j);
 	ext_image_copy_capture_frame_v1_attach_buffer(j->frame, j->buffer);
 	ext_image_copy_capture_frame_v1_damage_buffer(
 		j->frame, 0, 0, (int32_t)st->width, (int32_t)st->height);
@@ -281,10 +268,6 @@ static bool request_frame(struct conn *c, struct job *j) {
 // the frame's pixels become the shot, which takes over map and buffer
 static bool take_shot(struct job *j) {
 	const struct state *st = &j->st;
-	if (st->result == FAILED) {
-		report_failure(st->reason, j->name);
-		return false;
-	}
 	if (st->transform > WL_OUTPUT_TRANSFORM_FLIPPED_270) {
 		log_error("compositor sent an invalid transform %u for %s",
 			st->transform, j->name);
@@ -319,55 +302,89 @@ static bool take_shot(struct job *j) {
 	return true;
 }
 
-static bool run(struct conn *c, struct job *jobs, size_t n) {
-	bool ok = false;
-	// all of them, so cleanup can treat every job and shot alike
+// a batch of n jobs for the caller to fill, every shot cleared first so a
+// failure at any point leaves them all safe to finish
+static struct capture *capture_new(
+	struct conn *c, size_t n, struct shot *shots) {
 	for (size_t i = 0; i < n; i++) {
-		*jobs[i].shot = (struct shot){0};
-		jobs[i].st =
-			(struct state){.transform = WL_OUTPUT_TRANSFORM_NORMAL};
-		jobs[i].map = MAP_FAILED;
+		shots[i] = (struct shot){0};
 	}
+	struct capture *cap = calloc(1, sizeof(*cap));
+	struct job *jobs = calloc(n, sizeof(*jobs));
+	if (!cap || !jobs) {
+		log_error("out of memory");
+		free(cap);
+		free(jobs);
+		return NULL;
+	}
+	*cap = (struct capture){.conn = c, .jobs = jobs, .n = n, .left = n};
 	for (size_t i = 0; i < n; i++) {
-		struct job *j = &jobs[i];
+		jobs[i] = (struct job){
+			.cap = cap,
+			.shot = &shots[i],
+			.st = {.transform = WL_OUTPUT_TRANSFORM_NORMAL},
+			.map = MAP_FAILED,
+		};
+	}
+	return cap;
+}
+
+static bool capture_begin(struct capture *cap) {
+	for (size_t i = 0; i < cap->n; i++) {
+		struct job *j = &cap->jobs[i];
+		if (!j->source) {
+			log_error("out of memory");
+			return false;
+		}
 		uint32_t options =
 			j->cursor
 				? EXT_IMAGE_COPY_CAPTURE_MANAGER_V1_OPTIONS_PAINT_CURSORS
 				: 0;
 		j->session = ext_image_copy_capture_manager_v1_create_session(
-			c->capture, j->source, options);
+			cap->conn->capture, j->source, options);
 		if (!j->session) {
 			log_error("out of memory");
-			goto out;
+			return false;
 		}
 		ext_image_copy_capture_session_v1_add_listener(
-			j->session, &session_listener, &j->st);
+			j->session, &session_listener, j);
 	}
-	while (!sessions_done(jobs, n)) {
-		if (!dispatch(c)) {
-			goto out;
-		}
-	}
-	for (size_t i = 0; i < n; i++) {
-		if (!request_frame(c, &jobs[i])) {
-			goto out;
-		}
-	}
-	while (!frames_done(jobs, n)) {
-		if (!dispatch(c)) {
-			goto out;
-		}
-	}
-	for (size_t i = 0; i < n; i++) {
-		if (!take_shot(&jobs[i])) {
-			goto out;
-		}
-	}
-	ok = true;
+	return true;
+}
 
-out:
-	for (size_t i = n; i > 0; i--) {
-		struct job *j = &jobs[i - 1];
+struct capture *capture_start(struct conn *c, const struct capture_req *reqs,
+	size_t n, struct shot *shots) {
+	struct capture *cap = capture_new(c, n, shots);
+	if (!cap) {
+		return NULL;
+	}
+	for (size_t i = 0; i < n; i++) {
+		struct job *j = &cap->jobs[i];
+		j->source =
+			ext_output_image_capture_source_manager_v1_create_source(
+				c->output_source, reqs[i].output->wl);
+		j->cursor = reqs[i].cursor;
+		j->name = reqs[i].output->name;
+	}
+	if (!capture_begin(cap)) {
+		capture_destroy(cap);
+		return NULL;
+	}
+	return cap;
+}
+
+enum capture_status capture_status(const struct capture *cap) {
+	return cap->failed ? CAPTURE_FAILED
+	       : cap->left ? CAPTURE_PENDING
+			   : CAPTURE_DONE;
+}
+
+void capture_destroy(struct capture *cap) {
+	if (!cap) {
+		return;
+	}
+	for (size_t i = cap->n; i > 0; i--) {
+		struct job *j = &cap->jobs[i - 1];
 		if (j->frame) {
 			ext_image_copy_capture_frame_v1_destroy(j->frame);
 		}
@@ -380,51 +397,38 @@ out:
 		if (j->map != MAP_FAILED) {
 			munmap(j->map, j->size);
 		}
-		if (!ok) {
-			shot_finish(j->shot);
+		if (j->source) {
+			ext_image_capture_source_v1_destroy(j->source);
 		}
 	}
-	return ok;
+	free(cap->jobs);
+	free(cap);
 }
 
-bool capture_outputs(struct conn *c, const struct capture_req *reqs, size_t n,
-	struct shot *shots) {
-	struct job *jobs = calloc(n, sizeof(*jobs));
-	if (!jobs) {
-		log_error("out of memory");
-		return false;
-	}
-	bool ok = false;
-	for (size_t i = 0; i < n; i++) {
-		jobs[i] = (struct job){
-			.source =
-				ext_output_image_capture_source_manager_v1_create_source(
-					c->output_source, reqs[i].output->wl),
-			.cursor = reqs[i].cursor,
-			.name = reqs[i].output->name,
-			.shot = &shots[i],
-		};
-		if (!jobs[i].source) {
-			log_error("out of memory");
-			goto out;
+// dispatches until the batch is done, then destroys it; on failure every
+// shot is finished
+static bool capture_wait(struct capture *cap) {
+	bool ok = cap != NULL;
+	while (ok && capture_status(cap) == CAPTURE_PENDING) {
+		if (wl_display_dispatch(cap->conn->display) < 0) {
+			log_error("lost the Wayland connection");
+			ok = false;
 		}
 	}
-	ok = run(c, jobs, n);
-
-out:
-	for (size_t i = n; i > 0; i--) {
-		if (jobs[i - 1].source) {
-			ext_image_capture_source_v1_destroy(jobs[i - 1].source);
+	ok = ok && capture_status(cap) == CAPTURE_DONE;
+	if (cap && !ok) {
+		for (size_t i = 0; i < cap->n; i++) {
+			shot_finish(cap->jobs[i].shot);
 		}
 	}
-	free(jobs);
+	capture_destroy(cap);
 	return ok;
 }
 
 bool capture_output(struct conn *c, const struct output *o, bool cursor,
 	struct shot *shot) {
 	struct capture_req req = {o, cursor};
-	return capture_outputs(c, &req, 1, shot);
+	return capture_wait(capture_start(c, &req, 1, shot));
 }
 
 struct toplevels {
@@ -497,8 +501,8 @@ bool capture_window(struct conn *c, const char *identifier, bool cursor,
 	struct shot *shot) {
 	static const char name[] = "the focused window";
 	struct toplevels t = {.identifier = identifier};
-	struct ext_image_capture_source_v1 *source = NULL;
 	bool ok = false;
+	*shot = (struct shot){0};
 	// bound only here: a bound list streams every toplevel's handle
 	struct ext_foreign_toplevel_list_v1 *list =
 		wl_registry_bind(c->registry, c->toplevel_list_name,
@@ -519,26 +523,24 @@ bool capture_window(struct conn *c, const char *identifier, bool cursor,
 			identifier);
 		goto out;
 	}
-	source =
-		ext_foreign_toplevel_image_capture_source_manager_v1_create_source(
-			c->toplevel_source, t.match);
-	if (!source) {
-		log_error("out of memory");
-		goto out;
+	struct capture *cap = capture_new(c, 1, shot);
+	if (cap) {
+		struct job *j = &cap->jobs[0];
+		j->source =
+			ext_foreign_toplevel_image_capture_source_manager_v1_create_source(
+				c->toplevel_source, t.match);
+		j->cursor = cursor;
+		j->alpha = true;
+		j->name = name;
+		if (!capture_begin(cap)) {
+			capture_destroy(cap);
+			cap = NULL;
+		}
 	}
-	struct job job = {
-		.source = source,
-		.cursor = cursor,
-		.alpha = true,
-		.name = name,
-		.shot = shot,
-	};
-	ok = run(c, &job, 1);
+	// destroys the source before its handle below
+	ok = capture_wait(cap);
 
 out:
-	if (source) {
-		ext_image_capture_source_v1_destroy(source);
-	}
 	if (t.match) {
 		ext_foreign_toplevel_handle_v1_destroy(t.match);
 	}

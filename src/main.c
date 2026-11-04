@@ -185,24 +185,49 @@ static int shoot_window(
 	return encode(c, &shot, &shot.image, a->edit ? &in : NULL, png, len);
 }
 
-// region is output capture plus a crop of what the selector left undimmed
+// region crops one frozen output: every output is captured at launch, with
+// and without the pointer and the selector shows them as they land
 static int shoot_region(
 	struct conn *c, const struct args *a, uint8_t **png, size_t *len) {
-	struct selector *s = select_create(c, a->cursor);
-	if (!s) {
+	size_t n = (size_t)wl_list_length(&c->outputs);
+	struct capture_req *reqs = calloc(2 * n, sizeof(*reqs));
+	struct shot *shots = calloc(2 * n, sizeof(*shots));
+	if (!reqs || !shots) {
+		log_error("out of memory");
+		free(reqs);
+		free(shots);
 		return 1;
 	}
+	// readbacks land in request order, the variant shown first goes first
+	size_t i = 0;
+	struct output *o;
+	wl_list_for_each(o, &c->outputs, link) {
+		reqs[i] = (struct capture_req){o, a->cursor};
+		reqs[n + i] = (struct capture_req){o, !a->cursor};
+		i++;
+	}
+	struct capture *cap = capture_start(c, reqs, 2 * n, shots);
+	free(reqs);
+	struct shot *plain = a->cursor ? shots + n : shots;
+	struct shot *pointer = a->cursor ? shots : shots + n;
+	struct selector *s =
+		cap ? select_create(c, a->cursor, cap, plain, pointer) : NULL;
 	struct choice ch;
-	enum select_result r = select_run(s, &ch);
-	if (r != SELECT_CONFIRMED) {
-		select_destroy(s);
-		return r == SELECT_CANCELLED ? 3 : 1;
-	}
-	struct shot shot;
-	bool ok = capture_output(c, ch.output, ch.cursor, &shot);
+	enum select_result r = s ? select_run(s, &ch) : SELECT_FAILED;
 	select_destroy(s);
-	if (!ok) {
-		return 1;
+	capture_destroy(cap);
+	// only the chosen pixels are kept for encoding or editing
+	struct shot shot = {0};
+	if (r == SELECT_CONFIRMED) {
+		shot = *ch.shot;
+		*ch.shot = (struct shot){0};
+	}
+	for (i = 0; i < 2 * n; i++) {
+		shot_finish(&shots[i]);
+	}
+	free(shots);
+	if (r != SELECT_CONFIRMED) {
+		return r == SELECT_CANCELLED ? 3 : 1;
 	}
 	struct png_image img = shot.image;
 	struct rect px = rect_physical(
