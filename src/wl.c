@@ -133,8 +133,8 @@ static void registry_global(void *data, struct wl_registry *registry,
 
 	if (is(iface, &wl_shm_interface) && !c->shm) {
 		c->shm = bind_global(c, name, &wl_shm_interface, 1);
-	} else if (is(iface, &wl_output_interface) && version >= 4) {
-		// v4 is the first version with the name event
+	} else if (is(iface, &wl_output_interface) && version >= 4 &&
+		   !c->outputs_fixed) {
 		add_output(c, name);
 	} else if (is(iface, capture) && !c->capture) {
 		c->capture = bind_global(c, name, capture, 1);
@@ -143,7 +143,6 @@ static void registry_global(void *data, struct wl_registry *registry,
 	} else if (is(iface, toplevel_source) && !c->toplevel_source) {
 		c->toplevel_source = bind_global(c, name, toplevel_source, 1);
 	} else if (is(iface, &wl_seat_interface) && !c->seat) {
-		// v5: release; later versions add nothing the selector uses
 		c->seat = bind_global(
 			c, name, &wl_seat_interface, version < 5 ? version : 5);
 		if (c->seat) {
@@ -153,7 +152,6 @@ static void registry_global(void *data, struct wl_registry *registry,
 		c->data_control = bind_global(c, name, data_control, 1);
 	} else if (is(iface, &wl_compositor_interface) && version >= 4 &&
 		   !c->compositor) {
-		// v4: wl_surface.damage_buffer
 		c->compositor =
 			bind_global(c, name, &wl_compositor_interface, 4);
 	} else if (is(iface, &wl_subcompositor_interface) &&
@@ -178,8 +176,6 @@ static void registry_global(void *data, struct wl_registry *registry,
 	}
 }
 
-// sweetshot lives for one capture. An output unplugged meanwhile ends its
-// capture session with `stopped`, which the capture path reports
 static void registry_global_remove(
 	void *data, struct wl_registry *registry, uint32_t name) {
 	(void)data, (void)registry, (void)name;
@@ -214,13 +210,12 @@ bool conn_init(struct conn *c) {
 	}
 	wl_registry_add_listener(c->registry, &registry_listener, c);
 
-	// the first roundtrip delivers the globals, the second the initial
-	// events (names) of the outputs bound during the first
 	for (int i = 0; i < 2; i++) {
 		if (wl_display_roundtrip(c->display) < 0) {
 			log_error("lost the Wayland connection");
 			goto fail;
 		}
+		c->outputs_fixed = true;
 	}
 	bool unnamed = false;
 	struct output *o;
@@ -228,8 +223,6 @@ bool conn_init(struct conn *c) {
 		unnamed |= !o->name;
 	}
 	if (c->oom || unnamed) {
-		// v4 outputs always send a name, so a missing one means
-		// strdup failed
 		log_error("out of memory");
 		goto fail;
 	}
