@@ -23,7 +23,6 @@ enum select_result {
 
 struct selector;
 
-
 struct selector *select_create(struct conn *c, bool cursor, struct capture *cap,
 	struct shot *plain, struct shot *pointer);
 

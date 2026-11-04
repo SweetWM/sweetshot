@@ -103,17 +103,12 @@ static struct output *find_output(struct conn *c, const char *name) {
 	return NULL;
 }
 
-// opens the editor when `edit` is set, then encodes its result, or img, once.
-// The capture is freed before returning, so the clipboard child holds only
-// PNG bytes. Returns an exit status
-static int encode(struct conn *c, struct shot *shot,
-	const struct png_image *img, const struct edit_input *edit,
-	uint8_t **png, size_t *len) {
+
+static int encode(struct shot *shot, const struct png_image *img, bool edit,
+	struct editor *e, uint8_t **png, size_t *len) {
 	struct png_image view = *img;
-	struct editor *e = NULL;
 	int status = 1;
 	if (edit) {
-		e = edit_create(c, edit);
 		enum edit_result r = e ? edit_run(e, &view) : EDIT_FAILED;
 		if (r != EDIT_DONE) {
 			status = r == EDIT_CANCELLED ? 3 : 1;
@@ -152,7 +147,8 @@ static int shoot_output(
 		.image = shot.image,
 		.fit = EDIT_OUTPUT,
 	};
-	return encode(c, &shot, &shot.image, a->edit ? &in : NULL, png, len);
+	return encode(&shot, &shot.image, a->edit,
+		a->edit ? edit_create(c, &in) : NULL, png, len);
 }
 
 // the window focused when sweetshot started, a later focus change does not
@@ -182,7 +178,8 @@ static int shoot_window(
 		.image = shot.image,
 		.fit = EDIT_WINDOW,
 	};
-	return encode(c, &shot, &shot.image, a->edit ? &in : NULL, png, len);
+	return encode(&shot, &shot.image, a->edit,
+		a->edit ? edit_create(c, &in) : NULL, png, len);
 }
 
 // region crops one frozen output: every output is captured at launch, with
@@ -214,14 +211,41 @@ static int shoot_region(
 		cap ? select_create(c, a->cursor, cap, plain, pointer) : NULL;
 	struct choice ch;
 	enum select_result r = s ? select_run(s, &ch) : SELECT_FAILED;
-	select_destroy(s);
-	capture_destroy(cap);
 	// only the chosen pixels are kept for encoding or editing
 	struct shot shot = {0};
+	struct png_image img = {0};
+	struct rect px = {0};
+	struct editor *e = NULL;
 	if (r == SELECT_CONFIRMED) {
 		shot = *ch.shot;
 		*ch.shot = (struct shot){0};
+		img = shot.image;
+		px = rect_physical(
+			ch.rect, ch.width, ch.height, img.width, img.height);
+		img.data += (size_t)px.y * img.stride + (size_t)px.x * 4;
+		img.width = (uint32_t)px.w;
+		img.height = (uint32_t)px.h;
 	}
+	if (r == SELECT_CONFIRMED && a->edit) {
+		struct edit_input in = {
+			.output = ch.output,
+			.image = img,
+			.fit = EDIT_REGION,
+			.sel = ch.rect,
+			.full_w = shot.image.width,
+			.full_h = shot.image.height,
+			.backdrop = shot.buffer,
+			.backdrop_transform = shot.transform,
+			.backdrop_crop = px,
+		};
+		e = edit_create(c, &in);
+		if (e && !edit_wait_shown(e)) {
+			edit_destroy(e);
+			e = NULL;
+		}
+	}
+	select_destroy(s);
+	capture_destroy(cap);
 	for (i = 0; i < 2 * n; i++) {
 		shot_finish(&shots[i]);
 	}
@@ -229,22 +253,7 @@ static int shoot_region(
 	if (r != SELECT_CONFIRMED) {
 		return r == SELECT_CANCELLED ? 3 : 1;
 	}
-	struct png_image img = shot.image;
-	struct rect px = rect_physical(
-		ch.rect, ch.width, ch.height, img.width, img.height);
-	img.data += (size_t)px.y * img.stride + (size_t)px.x * 4;
-	img.width = (uint32_t)px.w;
-	img.height = (uint32_t)px.h;
-	// the editor opens on the same output, over the frozen selection
-	struct edit_input in = {
-		.output = ch.output,
-		.image = img,
-		.fit = EDIT_REGION,
-		.sel = ch.rect,
-		.full_w = shot.image.width,
-		.full_h = shot.image.height,
-	};
-	return encode(c, &shot, &img, a->edit ? &in : NULL, png, len);
+	return encode(&shot, &img, a->edit, e, png, len);
 }
 
 int main(int argc, char **argv) {
