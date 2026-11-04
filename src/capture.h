@@ -19,10 +19,21 @@ struct capture_req {
 	bool cursor;
 };
 
-bool capture_outputs(struct conn *c, const struct capture_req *reqs, size_t n,
-	struct shot *shots);
+enum capture_status {
+	CAPTURE_PENDING,
+	CAPTURE_DONE,
+	CAPTURE_FAILED, // reported already
+};
 
-// capture_outputs for one output
+struct capture;
+
+struct capture *capture_start(struct conn *c, const struct capture_req *reqs,
+	size_t n, struct shot *shots);
+enum capture_status capture_status(const struct capture *cap);
+// leaves the shots taken so far to the caller
+void capture_destroy(struct capture *cap);
+
+// blocking, one output; on failure the shot is finished
 bool capture_output(
 	struct conn *c, const struct output *o, bool cursor, struct shot *shot);
 bool capture_window(

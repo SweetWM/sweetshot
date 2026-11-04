@@ -1,5 +1,6 @@
 #include "select.h"
 
+#include "capture.h"
 #include "input.h"
 #include "log.h"
 #include "overlay.h"
@@ -25,6 +26,9 @@ struct overlay {
 	struct selector *sel;
 	size_t index;
 	const struct output *out;
+	struct shot *plain; // this output's frozen pixels, without the pointer
+	struct shot *pointer;	    // and with it
+	struct wl_buffer *shown;    // attached to surface, NULL until mapped
 	struct wl_surface *surface; // NULL once destroyed
 	struct wp_viewport *viewport;
 	struct zwlr_layer_surface_v1 *layer;
@@ -34,7 +38,6 @@ struct overlay {
 	int32_t h;
 	bool dirty;
 	struct wl_callback *frame;
-	uint32_t frames;
 };
 
 enum state {
@@ -46,9 +49,9 @@ enum state {
 
 struct selector {
 	struct conn *conn;
+	struct capture *cap;
 	struct overlay *overlays;
 	size_t n;
-	struct wl_buffer *clear;
 	struct wl_buffer *dim;
 	struct wl_buffer *white;
 	struct wl_region *no_input;
@@ -63,8 +66,7 @@ struct selector {
 	int32_t drag_y;
 	bool cursor;
 	enum state state;
-	// taken at confirm, late input cannot change them
-	struct overlay *target;
+	// taken at confirm, late input cannot change it
 	struct choice choice;
 };
 
@@ -83,8 +85,30 @@ static bool request_frame(struct overlay *o) {
 	return true;
 }
 
+static struct wl_buffer *wanted(const struct overlay *o) {
+	const struct shot *a = o->sel->cursor ? o->pointer : o->plain;
+	const struct shot *b = o->sel->cursor ? o->plain : o->pointer;
+	return a->buffer ? a->buffer : b->buffer;
+}
+
 static void apply(struct overlay *o) {
 	struct selector *s = o->sel;
+	struct wl_buffer *b = wanted(o);
+	if (!b) {
+		return;
+	}
+	if (b != o->shown) {
+		const struct shot *shot =
+			b == o->plain->buffer ? o->plain : o->pointer;
+		// the capture's own buffer, the viewport maps it 1:1 onto
+		// the output's physical pixels
+		wl_surface_attach(o->surface, b, 0, 0);
+		wl_surface_set_buffer_transform(
+			o->surface, (int32_t)shot->transform);
+		wl_surface_damage_buffer(
+			o->surface, 0, 0, INT32_MAX, INT32_MAX);
+		o->shown = b;
+	}
 	struct rect r[RECT_PARTS];
 	rect_layout(o->w, o->h, s->sel_o == o ? &s->sel : NULL, r);
 	for (int i = 0; i < RECT_PARTS; i++) {
@@ -146,7 +170,6 @@ static void frame_done(void *data, struct wl_callback *cb, uint32_t time) {
 	struct overlay *o = data;
 	wl_callback_destroy(cb);
 	o->frame = NULL;
-	o->frames++;
 	if (o->dirty && o->sel->state == SELECTING) {
 		apply(o);
 	}
@@ -161,20 +184,15 @@ static void layer_configure(void *data, struct zwlr_layer_surface_v1 *layer,
 		o->sel->state = CLOSED;
 		return;
 	}
-	bool first = o->w == 0;
 	o->w = (int32_t)w;
 	o->h = (int32_t)h;
 	wp_viewport_set_destination(o->viewport, o->w, o->h);
-	if (first) {
-		wl_surface_attach(o->surface, o->sel->clear, 0, 0);
-		wl_surface_damage_buffer(o->surface, 0, 0, 1, 1);
-	}
-	if (o->sel->state != SELECTING) {
-		wl_surface_commit(o->surface);
+	o->dirty = true;
+	// without a frozen buffer the ack waits for the commit that maps it
+	if (!wanted(o)) {
 		return;
 	}
-	o->dirty = true;
-	if (o->frame) {
+	if (o->frame || o->sel->state != SELECTING) {
 		wl_surface_commit(o->surface);
 	} else {
 		apply(o);
@@ -275,12 +293,11 @@ static void on_key(void *data, uint32_t key, uint32_t mods) {
 		if (o && s->sel.w > 0 && s->sel.h > 0) {
 			s->choice = (struct choice){
 				.output = o->out,
+				.shot = s->cursor ? o->pointer : o->plain,
 				.rect = s->sel,
 				.width = o->w,
 				.height = o->h,
-				.cursor = s->cursor,
 			};
-			s->target = o;
 			s->state = CONFIRMED;
 		}
 		return;
@@ -296,6 +313,9 @@ static void on_key(void *data, uint32_t key, uint32_t mods) {
 	}
 	case KEY_P:
 		s->cursor = !s->cursor;
+		for (size_t i = 0; i < s->n; i++) {
+			touch(&s->overlays[i]);
+		}
 		return;
 	case KEY_LEFT:
 		dx = -1;
@@ -365,10 +385,17 @@ static void destroy_overlay(struct overlay *o) {
 
 // fills the next overlay; on failure the selector's destroy cleans up
 // whatever was made
-static bool add_overlay(struct selector *s, const struct output *out) {
+static bool add_overlay(struct selector *s, const struct output *out,
+	struct shot *plain, struct shot *pointer) {
 	struct conn *c = s->conn;
 	struct overlay *o = &s->overlays[s->n];
-	*o = (struct overlay){.sel = s, .index = s->n, .out = out};
+	*o = (struct overlay){
+		.sel = s,
+		.index = s->n,
+		.out = out,
+		.plain = plain,
+		.pointer = pointer,
+	};
 	s->n++;
 	o->surface = wl_compositor_create_surface(c->compositor);
 	if (!o->surface) {
@@ -402,13 +429,19 @@ static bool add_overlay(struct selector *s, const struct output *out) {
 	return true;
 }
 
-struct selector *select_create(struct conn *c, bool cursor) {
+struct selector *select_create(struct conn *c, bool cursor, struct capture *cap,
+	struct shot *plain, struct shot *pointer) {
 	struct selector *s = calloc(1, sizeof(*s));
 	if (!s) {
 		log_error("out of memory");
 		return NULL;
 	}
-	*s = (struct selector){.conn = c, .cursor = cursor, .state = SELECTING};
+	*s = (struct selector){
+		.conn = c,
+		.cap = cap,
+		.cursor = cursor,
+		.state = SELECTING,
+	};
 	// reports its own error
 	s->input = input_create(c, &input_listener, s);
 	if (!s->input) {
@@ -417,20 +450,19 @@ struct selector *select_create(struct conn *c, bool cursor) {
 	}
 	s->overlays = calloc(wl_list_length(&c->outputs), sizeof(*s->overlays));
 	struct wp_single_pixel_buffer_manager_v1 *sp = c->single_pixel;
-	s->clear = wp_single_pixel_buffer_manager_v1_create_u32_rgba_buffer(
-		sp, 0, 0, 0, 0);
 	// premultiplied black at ~45%
 	s->dim = wp_single_pixel_buffer_manager_v1_create_u32_rgba_buffer(
 		sp, 0, 0, 0, 0x73333333);
 	s->white = wp_single_pixel_buffer_manager_v1_create_u32_rgba_buffer(
 		sp, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX);
 	s->no_input = wl_compositor_create_region(c->compositor);
-	if (!s->overlays || !s->clear || !s->dim || !s->white || !s->no_input) {
+	if (!s->overlays || !s->dim || !s->white || !s->no_input) {
 		goto fail;
 	}
 	struct output *out;
 	wl_list_for_each(out, &c->outputs, link) {
-		if (!add_overlay(s, out)) {
+		size_t i = s->n;
+		if (!add_overlay(s, out, &plain[i], &pointer[i])) {
 			goto fail;
 		}
 	}
@@ -442,6 +474,7 @@ fail:
 	return NULL;
 }
 
+// each output maps as soon as its own capture lands: they arrive one by one
 static bool dispatch(struct selector *s) {
 	if (wl_display_dispatch(s->conn->display) < 0) {
 		log_error("lost the Wayland connection");
@@ -450,6 +483,14 @@ static bool dispatch(struct selector *s) {
 	if (s->state == CLOSED) {
 		log_error("the compositor closed the selector");
 		return false;
+	}
+	if (capture_status(s->cap) == CAPTURE_FAILED) {
+		return false;
+	}
+	for (size_t i = 0; i < s->n; i++) {
+		if (s->overlays[i].shown != wanted(&s->overlays[i])) {
+			touch(&s->overlays[i]);
+		}
 	}
 	return true;
 }
@@ -463,31 +504,11 @@ enum select_result select_run(struct selector *s, struct choice *choice) {
 	if (s->state == CANCELLED) {
 		return SELECT_CANCELLED;
 	}
-
-	// the other outputs: gone, keyboard and pointer focus go with them
-	struct overlay *t = s->target;
-	for (size_t i = 0; i < s->n; i++) {
-		if (&s->overlays[i] != t) {
-			destroy_overlay(&s->overlays[i]);
-		}
-	}
-	destroy_parts(t);
-	while (t->frame) {
+	// the chosen variant may still be on its way; any capture failing
+	// fails the command, as it would have before the selector
+	while (capture_status(s->cap) == CAPTURE_PENDING) {
 		if (!dispatch(s)) {
 			return SELECT_FAILED;
-		}
-	}
-	for (int i = 0; i < 2; i++) {
-		uint32_t before = t->frames;
-		if (!request_frame(t)) {
-			log_error("out of memory");
-			return SELECT_FAILED;
-		}
-		wl_surface_commit(t->surface);
-		while (t->frames == before) {
-			if (!dispatch(s)) {
-				return SELECT_FAILED;
-			}
 		}
 	}
 	*choice = s->choice;
@@ -510,9 +531,6 @@ void select_destroy(struct selector *s) {
 	}
 	if (s->dim) {
 		wl_buffer_destroy(s->dim);
-	}
-	if (s->clear) {
-		wl_buffer_destroy(s->clear);
 	}
 	input_destroy(s->input);
 	// hand keyboard focus back now, not after encoding
