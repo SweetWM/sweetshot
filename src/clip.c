@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -16,29 +17,31 @@ static void source_send(void *data, struct ext_data_control_source_v1 *source,
 	const char *mime_type, int32_t fd) {
 	(void)source;
 	struct clip *cl = data;
-	if (strcmp(mime_type, mime) != 0) {
+	int flags = fcntl(fd, F_GETFL);
+	if (strcmp(mime_type, mime) != 0 || cl->n_transfers == CLIP_TRANSFERS ||
+		flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
 		close(fd);
 		return;
 	}
-	// receivers may hand over a non-blocking pipe
-	int flags = fcntl(fd, F_GETFL);
-	if (flags >= 0) {
-		fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-	}
-	const uint8_t *p = cl->png;
-	size_t rest = cl->len;
-	while (rest > 0) {
-		ssize_t n = write(fd, p, rest);
+	cl->transfers[cl->n_transfers++] = (struct transfer){.fd = fd};
+}
+
+static bool write_some(const struct clip *cl, struct transfer *t) {
+	while (t->done < cl->len) {
+		ssize_t n = write(t->fd, cl->png + t->done, cl->len - t->done);
 		if (n < 0 && errno == EINTR) {
 			continue;
+		}
+		if (n < 0 && errno == EAGAIN) {
+			return true;
 		}
 		if (n <= 0) {
 			break; // EPIPE and the rest end this transfer only
 		}
-		p += n;
-		rest -= (size_t)n;
+		t->done += (size_t)n;
 	}
-	close(fd);
+	close(t->fd);
+	return false;
 }
 
 static void source_cancelled(
@@ -59,8 +62,6 @@ static void device_data_offer(void *data,
 	(void)data, (void)device, (void)offer;
 }
 
-// a long-lived child sees every later copy, so offers are destroyed on
-// arrival instead of piling up
 static void device_selection(void *data,
 	struct ext_data_control_device_v1 *device,
 	struct ext_data_control_offer_v1 *offer) {
@@ -130,6 +131,58 @@ static void detach(void) {
 	signal(SIGPIPE, SIG_IGN);
 }
 
+static void serve(struct clip *cl) {
+	struct wl_display *d = cl->conn->display;
+	struct pollfd fds[1 + CLIP_TRANSFERS];
+	for (;;) {
+		if (wl_display_dispatch_pending(d) < 0 || cl->cancelled) {
+			return;
+		}
+		// fails while events are queued, which the top dispatches
+		if (wl_display_prepare_read(d) != 0) {
+			continue;
+		}
+		// a full socket waits for POLLOUT, the rest goes out next time
+		int flushed = wl_display_flush(d);
+		if (flushed < 0 && errno != EAGAIN) {
+			wl_display_cancel_read(d);
+			return;
+		}
+		fds[0] = (struct pollfd){
+			.fd = wl_display_get_fd(d),
+			.events = flushed < 0 ? POLLIN | POLLOUT : POLLIN,
+		};
+		size_t n = cl->n_transfers;
+		for (size_t i = 0; i < n; i++) {
+			fds[1 + i] = (struct pollfd){
+				.fd = cl->transfers[i].fd,
+				.events = POLLOUT,
+			};
+		}
+		if (poll(fds, 1 + n, -1) < 0) {
+			wl_display_cancel_read(d);
+			if (errno == EINTR) {
+				continue;
+			}
+			return;
+		}
+		if (fds[0].revents & (POLLIN | POLLERR | POLLHUP)) {
+			if (wl_display_read_events(d) < 0) {
+				return;
+			}
+		} else {
+			wl_display_cancel_read(d);
+		}
+		// backwards: the last transfer takes a finished one's place
+		for (size_t i = n; i > 0; i--) {
+			struct transfer *t = &cl->transfers[i - 1];
+			if (fds[i].revents && !write_some(cl, t)) {
+				*t = cl->transfers[--cl->n_transfers];
+			}
+		}
+	}
+}
+
 bool clip_serve(struct clip *cl) {
 	if (cl->cancelled) {
 		return true; // replaced already, nothing left to serve
@@ -146,15 +199,15 @@ bool clip_serve(struct clip *cl) {
 		return true;
 	}
 	detach();
-	while (!cl->cancelled) {
-		if (wl_display_dispatch(cl->conn->display) < 0) {
-			break;
-		}
-	}
+	serve(cl);
 	_exit(0);
 }
 
 void clip_finish(struct clip *cl) {
+	for (size_t i = 0; i < cl->n_transfers; i++) {
+		close(cl->transfers[i].fd);
+	}
+	cl->n_transfers = 0;
 	if (cl->source) {
 		ext_data_control_source_v1_destroy(cl->source);
 	}
