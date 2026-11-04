@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <spawn.h>
 #include <stdlib.h>
 #include <string.h>
@@ -247,18 +248,28 @@ bool sweets_focus(struct focus *f) {
 	char *buf = malloc(REPLY_MAX);
 	int fds[2] = {-1, -1};
 	if (!buf || pipe2(fds, O_CLOEXEC) < 0) {
-		log_error("out of memory");
+		log_error("cannot ask sweets for the focused window: %s",
+			buf ? strerror(errno) : "out of memory");
 		free(buf);
 		return false;
 	}
-	posix_spawn_file_actions_t fa;
-	posix_spawn_file_actions_init(&fa);
-	posix_spawn_file_actions_adddup2(&fa, fds[1], STDOUT_FILENO);
 	extern char **environ;
 	pid_t pid;
 	char *argv[] = {"sweets", "msg", "--json", "windows", NULL};
-	int err = posix_spawnp(&pid, "sweets", &fa, NULL, argv, environ);
-	posix_spawn_file_actions_destroy(&fa);
+	// an inherited SIG_IGN would reap the child before waitpid sees it
+	signal(SIGCHLD, SIG_DFL);
+	posix_spawn_file_actions_t fa;
+	int err = posix_spawn_file_actions_init(&fa);
+	if (err == 0) {
+		// without the dup2 the reply would land on our stdout
+		err = posix_spawn_file_actions_adddup2(
+			&fa, fds[1], STDOUT_FILENO);
+		if (err == 0) {
+			err = posix_spawnp(
+				&pid, "sweets", &fa, NULL, argv, environ);
+		}
+		posix_spawn_file_actions_destroy(&fa);
+	}
 	close(fds[1]);
 	if (err) {
 		log_error("cannot run sweets to find the focused window: %s",
@@ -282,10 +293,11 @@ bool sweets_focus(struct focus *f) {
 	close(fds[0]);
 	fds[0] = -1;
 	int status;
-	while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+	pid_t waited;
+	while ((waited = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {
 	}
 	// sweets msg reports its own errors on stderr
-	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+	if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
 		log_error("sweets msg windows failed, cannot find the focused "
 			  "window");
 		goto out;
