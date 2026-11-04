@@ -144,8 +144,6 @@ char *save_png(const char *dir, const uint8_t *data, size_t len) {
 		return NULL;
 	}
 
-	// an unnamed file appears under its final name only once complete, and
-	// vanishes with its fd on any failure: nothing half-written is left
 	char *path = NULL;
 	int fd = openat(dirfd, ".", O_TMPFILE | O_WRONLY | O_CLOEXEC, 0600);
 	if (fd < 0 || write_all(fd, data, len) < 0 || fsync(fd) < 0) {
@@ -160,8 +158,6 @@ char *save_png(const char *dir, const uint8_t *data, size_t len) {
 	char proc[32];
 	snprintf(proc, sizeof(proc), "/proc/self/fd/%d", fd);
 	char name[64];
-	// linkat never replaces an existing name, symlinks included. Same
-	// second and same 16 random bits: draw again
 	for (int tries = 0; tries < 8; tries++) {
 		uint16_t r;
 		if (getrandom(&r, sizeof(r), 0) != sizeof(r)) {
@@ -171,10 +167,13 @@ char *save_png(const char *dir, const uint8_t *data, size_t len) {
 			"sweetshot-%04d%02d%02d-%02d%02d%02d-%04x.png",
 			tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
 			tm.tm_hour, tm.tm_min, tm.tm_sec, r);
+		path = join(dir, name);
+		if (!path) {
+			goto out; // reported
+		}
 		// AT_EMPTY_PATH would need CAP_DAC_READ_SEARCH
 		if (linkat(AT_FDCWD, proc, dirfd, name, AT_SYMLINK_FOLLOW) ==
 			0) {
-			path = join(dir, name);
 			close(fd);
 			close(dirfd);
 			return path;
@@ -182,10 +181,14 @@ char *save_png(const char *dir, const uint8_t *data, size_t len) {
 		if (errno != EEXIST) {
 			goto fail;
 		}
+		free(path);
+		path = NULL;
 	}
 
 fail:
 	log_error("cannot save screenshot in %s: %s", dir, strerror(errno));
+out:
+	free(path);
 	if (fd >= 0) {
 		close(fd);
 	}

@@ -567,9 +567,8 @@ struct editor *edit_create(struct conn *c, const struct edit_input *in) {
 	if (!e->input) {
 		goto fail;
 	}
-	// premultiplied black at ~45%, as the selector
 	e->dim = wp_single_pixel_buffer_manager_v1_create_u32_rgba_buffer(
-		c->single_pixel, 0, 0, 0, 0x73333333);
+		c->single_pixel, 0, 0, 0, OVERLAY_DIM_ALPHA);
 	e->no_input = wl_compositor_create_region(c->compositor);
 	e->surface = wl_compositor_create_surface(c->compositor);
 	if (!e->dim || !e->no_input || !e->surface) {
