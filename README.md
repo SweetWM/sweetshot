@@ -14,8 +14,9 @@ Small screenshot tool for Sweets Wayland compositor
 ## 🔥 Features
 
 - Region, output and window screenshots
-- Live region selector, mouse or keyboard
+- Region selector over a frozen screen, mouse or keyboard
 - Window shots without borders, transparency kept
+- Mark up a shot before saving it (`--edit`)
 - Saves a PNG and copies it to the clipboard
 - One small C binary, no helper tools (no grim, slurp or wl-copy)
 
@@ -23,7 +24,7 @@ Small screenshot tool for Sweets Wayland compositor
 
 ### Arch Linux
 
-Install sweetsho from the AUR:
+Install sweetshot from the AUR:
 
 ```bash
 # prebuilt release package
@@ -79,13 +80,49 @@ sweetshot output   # output of the focused window, or: sweetshot output DP-1
 sweetshot window   # focused window
 ```
 
-Options: `--file` or `--clip` for one destination only (default: both),
-`--dir PATH` to save elsewhere (default: `~/Pictures/Screenshots`),
-`--cursor` to include the pointer.
+| Option | Effect |
+| --- | --- |
+| `--file`, `--clip` | one destination only (default: both) |
+| `--dir PATH` | save elsewhere (default: `~/Pictures/Screenshots`) |
+| `--cursor` | include the pointer |
+| `--edit` | mark up the shot first |
 
-Region selector: drag or click an output, arrows move, Shift+arrows resize,
-Tab picks the next output, P toggles the pointer, Enter captures, Esc
-cancels.
+The saved path is printed on stdout. Exit status: 0 done, 1 failed (also
+partly), 2 usage error or unknown output, 3 cancelled.
+
+Files are never overwritten or left half-written. This needs `O_TMPFILE`
+(ext4, btrfs, xfs, tmpfs); vfat, exFAT and most FUSE mounts are refused.
+
+### Region selector
+
+The screen freezes while you select, so menus and tooltips stay in the shot.
+
+| Input | Action |
+| --- | --- |
+| Drag | select |
+| Drag inside the selection | move it |
+| Click | whole output; outside a selection, clear it |
+| Arrows / Shift+arrows | move / resize by 1 px (Ctrl: 10 px) |
+| Tab | next output |
+| P | show or hide the pointer |
+| Enter / Esc | capture / cancel |
+
+### Editor (`--edit`)
+
+Drag to draw, Enter saves, Esc cancels. The toolbar does the same as the
+keys; Tab hides it. Keys are physical positions (US layout):
+
+| Key | Action |
+| --- | --- |
+| A, L, R, E | arrow (default), line, rectangle, ellipse |
+| D, H, X | pen, highlighter, pixelate |
+| N | numbered badge, click to place |
+| F | fill rectangles and ellipses |
+| 1–9 | red, orange, yellow, green, blue, purple, pink, white, black |
+| `-` / `=`, wheel | thinner / thicker |
+| Shift while drawing | 45° lines, squares, circles |
+| Right button while drawing | drop the shape |
+| Ctrl+Z / Ctrl+Shift+Z, Ctrl+Y | undo / redo |
 
 ## Sweets config
 
@@ -94,12 +131,11 @@ sweets.bind("Print", "spawn", { "sweetshot", "region" })
 sweets.bind("Ctrl+Print", "spawn", { "sweetshot", "output" })
 sweets.bind("Alt+Print", "spawn", { "sweetshot", "window" })
 
--- open the region selector without animation
+-- no open animation for the selector and editor
 sweets.layer_rule({ namespace = "sweetshot", animation = false })
 ```
 
-With `sweets.permissions({ enforce = true })`, allow sweetshot to capture
-and use the clipboard:
+With `sweets.permissions({ enforce = true })`:
 
 ```lua
 sweets.permission({
@@ -107,4 +143,12 @@ sweets.permission({
     protocol = { "screencopy", "data_control" },
     mode = "allow",
 })
+```
+
+Notifications: wrap the binding (a cancel shows nothing):
+
+```lua
+sweets.bind("Print", "spawn", { "sh", "-c",
+    'f=$(sweetshot region) && notify-send -a sweetshot -i "$f" "Screenshot saved" "$f"'
+    .. ' || [ $? -eq 3 ] || notify-send -a sweetshot -u critical "Screenshot failed"' })
 ```
