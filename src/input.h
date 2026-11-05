@@ -28,6 +28,7 @@ struct input_listener {
 enum input_cursor {
 	INPUT_CROSSHAIR, // set on every pointer enter
 	INPUT_DEFAULT,
+	INPUT_MOVE,
 };
 
 struct input;

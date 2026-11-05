@@ -64,12 +64,15 @@ static void pointer_enter(void *data, struct wl_pointer *pointer,
 }
 
 void input_set_cursor(struct input *in, enum input_cursor c) {
+	static const uint32_t shapes[] = {
+		[INPUT_CROSSHAIR] = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CROSSHAIR,
+		[INPUT_DEFAULT] = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT,
+		[INPUT_MOVE] = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_MOVE,
+	};
 	if (!in->shape || c == in->cursor) {
 		return;
 	}
-	wp_cursor_shape_device_v1_set_shape(in->shape, in->enter,
-		c == INPUT_DEFAULT ? WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT
-				   : WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CROSSHAIR);
+	wp_cursor_shape_device_v1_set_shape(in->shape, in->enter, shapes[c]);
 	in->cursor = c;
 }
 
