@@ -61,8 +61,7 @@ static size_t tool(const struct grid *g, const struct icon *ic,
 			pts[i] = at(g, 6.0f + (float)i * 20.0f / 12.0f,
 				16.0f - 6.0f * sinf((float)i * 0.5236f));
 		}
-		op.pts = pts;
-		op.n_pts = SQUIGGLE;
+		draw_pen_borrow(&op, pts, SQUIGGLE);
 		break;
 	case DRAW_HIGHLIGHT:
 		// a marker stroke; multiply would vanish on a dark backdrop
@@ -138,8 +137,7 @@ size_t icon_ops(const struct icon *ic, float x, float y, float f,
 		pts[1] = at(&g, 14, 23);
 		pts[2] = at(&g, 25, 10);
 		ops[0] = stroke(&g, DRAW_PEN, c, 3, 0, 0, 0, 0);
-		ops[0].pts = pts;
-		ops[0].n_pts = 3;
+		draw_pen_borrow(&ops[0], pts, 3);
 		return 1;
 	case ICON_CANCEL:
 		ops[0] = stroke(&g, DRAW_LINE, c, 3, 10, 10, 22, 22);

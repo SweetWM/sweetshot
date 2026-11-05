@@ -38,6 +38,7 @@ struct draw_op {
 	struct raster_point *pts; // pen only, owned by the op
 	size_t n_pts;
 	size_t cap_pts;
+	struct raster_box span;
 };
 
 // ops[0, n_active) are drawn, ops[n_active, n) is the redo tail
@@ -51,14 +52,14 @@ struct draw_ops {
 // false when out of memory; the op is unchanged then
 bool draw_pen_add(struct draw_op *op, struct raster_point p);
 
+void draw_pen_borrow(struct draw_op *op, struct raster_point *pts, size_t n);
+
 void draw_op_finish(struct draw_op *op);
 
 bool draw_ops_push(struct draw_ops *ops, const struct draw_op *op);
 
 void draw_ops_finish(struct draw_ops *ops);
 
-// every pixel op can change, anti-aliasing included; may reach outside the
-// image
 struct rect draw_bounds(const struct draw_op *op);
 
 struct raster_point draw_constrain(enum draw_kind kind, struct raster_point a,

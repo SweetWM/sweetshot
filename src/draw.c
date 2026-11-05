@@ -155,13 +155,11 @@ struct rect draw_bounds(const struct draw_op *op) {
 		if (op->n_pts == 0) {
 			return (struct rect){0};
 		}
-		f = raster_capsule(op->pts[0], op->pts[0], op->width / 2.0f)
+		f = raster_capsule(
+			(struct raster_point){op->span.x0, op->span.y0},
+			(struct raster_point){op->span.x1, op->span.y1},
+			op->width / 2.0f)
 			    .box;
-		for (size_t i = 1; i < op->n_pts; i++) {
-			f = grow(f, raster_capsule(op->pts[i], op->pts[i],
-					    op->width / 2.0f)
-					    .box);
-		}
 		break;
 	case DRAW_ELLIPSE:
 		f = (struct raster_box){
@@ -363,6 +361,29 @@ void draw_render(const struct png_image *src, const struct draw_op *ops,
 	}
 }
 
+// the first point resets the span, so a copied op can be refilled
+static void span_add(struct draw_op *op, struct raster_point p) {
+	struct raster_box *s = &op->span;
+	if (op->n_pts == 0) {
+		*s = (struct raster_box){p.x, p.y, p.x, p.y};
+		return;
+	}
+	s->x0 = fminf(s->x0, p.x);
+	s->y0 = fminf(s->y0, p.y);
+	s->x1 = fmaxf(s->x1, p.x);
+	s->y1 = fmaxf(s->y1, p.y);
+}
+
+void draw_pen_borrow(struct draw_op *op, struct raster_point *pts, size_t n) {
+	op->pts = pts;
+	op->n_pts = 0;
+	op->cap_pts = 0;
+	for (size_t i = 0; i < n; i++) {
+		span_add(op, pts[i]);
+		op->n_pts++;
+	}
+}
+
 bool draw_pen_add(struct draw_op *op, struct raster_point p) {
 	if (op->n_pts == op->cap_pts) {
 		size_t cap = op->cap_pts ? op->cap_pts * 2 : 64;
@@ -374,6 +395,7 @@ bool draw_pen_add(struct draw_op *op, struct raster_point p) {
 		op->pts = pts;
 		op->cap_pts = cap;
 	}
+	span_add(op, p);
 	op->pts[op->n_pts++] = p;
 	return true;
 }
