@@ -29,6 +29,9 @@ struct capture;
 struct capture *capture_start(struct conn *c, const struct capture_req *reqs,
 	size_t n, struct shot *shots);
 enum capture_status capture_status(const struct capture *cap);
+// only the job filling shot still has to finish; the others stop now and
+// can no longer fail
+void capture_keep(struct capture *cap, const struct shot *shot);
 // leaves the shots taken so far to the caller
 void capture_destroy(struct capture *cap);
 

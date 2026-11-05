@@ -497,8 +497,9 @@ enum select_result select_run(struct selector *s, struct choice *choice) {
 	if (s->state != CONFIRMED) {
 		return s->state == CANCELLED ? SELECT_CANCELLED : SELECT_FAILED;
 	}
-	// the chosen variant may still be on its way; any capture failing
-	// fails the command, as it would have before the selector
+	// the chosen variant may still be on its way, the others no longer
+	// matter, so one of them failing now cannot fail the command
+	capture_keep(s->cap, s->choice.shot);
 	while (capture_status(s->cap) == CAPTURE_PENDING) {
 		if (!dispatch(s)) {
 			return SELECT_FAILED;
