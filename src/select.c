@@ -11,6 +11,10 @@
 #include <linux/input-event-codes.h>
 #include <stdlib.h>
 
+enum {
+	BIG_STEP = 10, // logical pixels per Ctrl+arrow
+};
+
 struct part {
 	struct wl_surface *surface;
 	struct wl_subsurface *sub;
@@ -61,6 +65,8 @@ struct selector {
 	struct overlay *drag_o; // a left-button drag started here
 	int32_t drag_x;
 	int32_t drag_y;
+	bool moving; // the drag moves sel, which was drag_from at the press
+	struct rect drag_from;
 	bool cursor;
 	enum state state;
 	// taken at confirm, late input cannot change it
@@ -148,6 +154,24 @@ static void touch(struct overlay *o) {
 	}
 }
 
+// a whole-output selection (a click, Tab) has nowhere to move, so a drag
+// over it draws a new one
+static bool over_sel(const struct selector *s) {
+	const struct overlay *o = s->sel_o;
+	if (!o || (s->sel.w >= o->w && s->sel.h >= o->h)) {
+		return false;
+	}
+	return s->hover == o && s->px >= s->sel.x &&
+	       s->px < s->sel.x + s->sel.w && s->py >= s->sel.y &&
+	       s->py < s->sel.y + s->sel.h;
+}
+
+// a new selection's own corner is under the pointer, it is not a move
+static void update_cursor(struct selector *s) {
+	bool move = s->moving || (!s->drag_o && over_sel(s));
+	input_set_cursor(s->input, move ? INPUT_MOVE : INPUT_CROSSHAIR);
+}
+
 static void set_sel(struct selector *s, struct overlay *o, struct rect r) {
 	struct overlay *old = s->sel_o;
 	s->sel_o = o;
@@ -158,6 +182,7 @@ static void set_sel(struct selector *s, struct overlay *o, struct rect r) {
 	if (o && o != old) {
 		touch(o);
 	}
+	update_cursor(s);
 }
 
 static struct rect whole(const struct overlay *o) {
@@ -224,6 +249,7 @@ static void on_enter(
 	}
 	s->px = fixed_floor(x);
 	s->py = fixed_floor(y);
+	update_cursor(s);
 }
 
 static void on_leave(void *data) {
@@ -235,8 +261,17 @@ static void on_motion(void *data, wl_fixed_t x, wl_fixed_t y) {
 	struct selector *s = data;
 	s->px = fixed_floor(x);
 	s->py = fixed_floor(y);
+	update_cursor(s);
 	struct overlay *o = s->drag_o;
 	if (!o || s->hover != o || s->state != SELECTING) {
+		return;
+	}
+	// from the press, so an edge stops the selection without the pointer
+	// drifting off it
+	if (s->moving) {
+		set_sel(s, o,
+			rect_nudge(s->drag_from, s->px - s->drag_x,
+				s->py - s->drag_y, false, o->w, o->h));
 		return;
 	}
 	set_sel(s, o,
@@ -254,18 +289,25 @@ static void on_button(void *data, uint32_t button, bool pressed) {
 		if (!o || o->w == 0) {
 			return;
 		}
+		s->moving = over_sel(s);
+		s->drag_from = s->sel;
 		s->drag_o = o;
 		s->drag_x = rect_clamp(s->px, 0, o->w);
 		s->drag_y = rect_clamp(s->py, 0, o->h);
-		set_sel(s, o, (struct rect){s->drag_x, s->drag_y, 0, 0});
+		if (!s->moving) {
+			set_sel(s, o,
+				(struct rect){s->drag_x, s->drag_y, 0, 0});
+		}
 	} else if (s->drag_o) {
 		o = s->drag_o;
 		s->drag_o = NULL;
+		s->moving = false;
 		// a click selects the whole output
 		if (abs(s->px - s->drag_x) < RECT_CLICK_SLOP &&
 			abs(s->py - s->drag_y) < RECT_CLICK_SLOP) {
 			set_sel(s, o, whole(o));
 		}
+		update_cursor(s);
 	}
 }
 
@@ -327,7 +369,10 @@ static void on_key(void *data, uint32_t key, uint32_t mods) {
 	}
 	if (o) {
 		bool resize = mods & INPUT_SHIFT;
-		set_sel(s, o, rect_nudge(s->sel, dx, dy, resize, o->w, o->h));
+		int32_t step = mods & INPUT_CTRL ? BIG_STEP : 1;
+		set_sel(s, o,
+			rect_nudge(s->sel, dx * step, dy * step, resize, o->w,
+				o->h));
 	}
 }
 
