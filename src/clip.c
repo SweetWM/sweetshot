@@ -75,7 +75,7 @@ static void device_finished(
 	void *data, struct ext_data_control_device_v1 *device) {
 	(void)device;
 	struct clip *cl = data;
-	cl->cancelled = true;
+	cl->finished = true;
 }
 
 static const struct ext_data_control_device_v1_listener device_listener = {
@@ -103,6 +103,11 @@ bool clip_set(struct clip *cl, struct conn *c, const uint8_t *png, size_t len) {
 	ext_data_control_device_v1_set_selection(cl->device, cl->source);
 	if (wl_display_roundtrip(c->display) < 0) {
 		log_error("lost the Wayland connection");
+		goto fail;
+	}
+	if (cl->finished) {
+		log_error("the compositor ended the clipboard device, nothing "
+			  "was copied");
 		goto fail;
 	}
 	return true;
@@ -135,7 +140,8 @@ static void serve(struct clip *cl) {
 	struct wl_display *d = cl->conn->display;
 	struct pollfd fds[1 + CLIP_TRANSFERS];
 	for (;;) {
-		if (wl_display_dispatch_pending(d) < 0 || cl->cancelled) {
+		if (wl_display_dispatch_pending(d) < 0 || cl->cancelled ||
+			cl->finished) {
 			return;
 		}
 		// fails while events are queued, which the top dispatches

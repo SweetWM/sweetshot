@@ -21,7 +21,8 @@ struct clip {
 	struct ext_data_control_source_v1 *source;
 	struct transfer transfers[CLIP_TRANSFERS];
 	size_t n_transfers;
-	bool cancelled; // another client took the selection, or no device
+	bool cancelled; // another client took the selection
+	bool finished;	// the compositor ended the device, nothing is served
 };
 
 bool clip_set(struct clip *cl, struct conn *c, const uint8_t *png, size_t len);
