@@ -354,6 +354,28 @@ enum capture_status capture_status(const struct capture *cap) {
 			   : CAPTURE_DONE;
 }
 
+void capture_keep(struct capture *cap, const struct shot *shot) {
+	cap->left = 0;
+	for (size_t i = 0; i < cap->n; i++) {
+		struct job *j = &cap->jobs[i];
+		// a taken shot's session is gone already
+		if (!j->session) {
+			continue;
+		}
+		if (j->shot == shot) {
+			cap->left = 1;
+			continue;
+		}
+		// the compositor skips the readback, and no event comes back
+		if (j->frame) {
+			ext_image_copy_capture_frame_v1_destroy(j->frame);
+			j->frame = NULL;
+		}
+		ext_image_copy_capture_session_v1_destroy(j->session);
+		j->session = NULL;
+	}
+}
+
 void capture_destroy(struct capture *cap) {
 	if (!cap) {
 		return;

@@ -16,7 +16,7 @@ struct choice {
 };
 
 enum select_result {
-	SELECT_CONFIRMED, // every capture done
+	SELECT_CONFIRMED, // the chosen capture done
 	SELECT_CANCELLED,
 	SELECT_FAILED,
 };
