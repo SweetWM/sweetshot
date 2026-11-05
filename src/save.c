@@ -146,6 +146,13 @@ char *save_png(const char *dir, const uint8_t *data, size_t len) {
 
 	char *path = NULL;
 	int fd = openat(dirfd, ".", O_TMPFILE | O_WRONLY | O_CLOEXEC, 0600);
+	if (fd < 0 && errno == EOPNOTSUPP) {
+		log_error(
+			"cannot save screenshot in %s: its file system has no "
+			"O_TMPFILE support, pass a --dir on another one",
+			dir);
+		goto out;
+	}
 	if (fd < 0 || write_all(fd, data, len) < 0 || fsync(fd) < 0) {
 		goto fail;
 	}
