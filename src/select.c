@@ -65,7 +65,8 @@ struct selector {
 	struct overlay *drag_o; // a left-button drag started here
 	int32_t drag_x;
 	int32_t drag_y;
-	bool moving; // the drag moves sel, which was drag_from at the press
+	bool moving;		     // the drag moves sel
+	struct overlay *drag_from_o; // the selection at the press
 	struct rect drag_from;
 	bool cursor;
 	enum state state;
@@ -154,16 +155,16 @@ static void touch(struct overlay *o) {
 	}
 }
 
-// a whole-output selection (a click, Tab) has nowhere to move, so a drag
-// over it draws a new one
+static bool inside(struct rect r, int32_t x, int32_t y) {
+	return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
 static bool over_sel(const struct selector *s) {
 	const struct overlay *o = s->sel_o;
 	if (!o || (s->sel.w >= o->w && s->sel.h >= o->h)) {
 		return false;
 	}
-	return s->hover == o && s->px >= s->sel.x &&
-	       s->px < s->sel.x + s->sel.w && s->py >= s->sel.y &&
-	       s->py < s->sel.y + s->sel.h;
+	return s->hover == o && inside(s->sel, s->px, s->py);
 }
 
 // a new selection's own corner is under the pointer, it is not a move
@@ -290,6 +291,7 @@ static void on_button(void *data, uint32_t button, bool pressed) {
 			return;
 		}
 		s->moving = over_sel(s);
+		s->drag_from_o = s->sel.w > 0 && s->sel.h > 0 ? s->sel_o : NULL;
 		s->drag_from = s->sel;
 		s->drag_o = o;
 		s->drag_x = rect_clamp(s->px, 0, o->w);
@@ -302,10 +304,17 @@ static void on_button(void *data, uint32_t button, bool pressed) {
 		o = s->drag_o;
 		s->drag_o = NULL;
 		s->moving = false;
-		// a click selects the whole output
 		if (abs(s->px - s->drag_x) < RECT_CLICK_SLOP &&
 			abs(s->py - s->drag_y) < RECT_CLICK_SLOP) {
-			set_sel(s, o, whole(o));
+			struct overlay *from = s->drag_from_o;
+			if (!from) {
+				set_sel(s, o, whole(o));
+			} else if (from == o &&
+				   inside(s->drag_from, s->drag_x, s->drag_y)) {
+				set_sel(s, o, s->drag_from);
+			} else {
+				set_sel(s, NULL, (struct rect){0});
+			}
 		}
 		update_cursor(s);
 	}
