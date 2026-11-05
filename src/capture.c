@@ -516,6 +516,7 @@ bool capture_window(struct conn *c, const char *identifier, bool cursor,
 		log_error("lost the Wayland connection");
 		goto out;
 	}
+	ext_foreign_toplevel_list_v1_stop(list);
 	if (!t.match || t.closed) {
 		log_error("%s is gone (no toplevel with identifier %s)", name,
 			identifier);
