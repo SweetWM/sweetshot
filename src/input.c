@@ -1,9 +1,9 @@
 #include "input.h"
 
 #include "cursor-shape-v1-client-protocol.h"
+#include "evdev.h"
 #include "log.h"
 
-#include <linux/input-event-codes.h>
 #include <stdlib.h>
 #include <unistd.h>
 
