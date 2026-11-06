@@ -1,6 +1,7 @@
 #include "tool.h"
 
-#include <linux/input-event-codes.h>
+#include "evdev.h"
+
 #include <math.h>
 
 enum {

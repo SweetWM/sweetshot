@@ -1,6 +1,7 @@
 #include "select.h"
 
 #include "capture.h"
+#include "evdev.h"
 #include "input.h"
 #include "log.h"
 #include "overlay.h"
@@ -8,7 +9,6 @@
 #include "viewporter-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
-#include <linux/input-event-codes.h>
 #include <stdlib.h>
 
 enum {

@@ -1,8 +1,7 @@
 #include "bar.h"
 
+#include "evdev.h"
 #include "tool.h"
-
-#include <linux/input-event-codes.h>
 
 enum {
 	GAP = 4,       // between buttons of a group, and between rows

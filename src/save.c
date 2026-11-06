@@ -145,6 +145,7 @@ char *save_png(const char *dir, const uint8_t *data, size_t len) {
 	}
 
 	char *path = NULL;
+#ifdef O_TMPFILE
 	int fd = openat(dirfd, ".", O_TMPFILE | O_WRONLY | O_CLOEXEC, 0600);
 	if (fd < 0 && errno == EOPNOTSUPP) {
 		log_error(
@@ -153,6 +154,13 @@ char *save_png(const char *dir, const uint8_t *data, size_t len) {
 			dir);
 		goto out;
 	}
+#else
+	// FreeBSD has no O_TMPFILE and links an open file only for root: a
+	// hidden 0600 file, renamed into place once complete. A crash before
+	// the rename leaves it behind
+	char tmp[] = ".sweetshot-XXXXXXXX.tmp";
+	int fd = mkostempsat(dirfd, tmp, 4, O_CLOEXEC);
+#endif
 	if (fd < 0 || write_all(fd, data, len) < 0 || fsync(fd) < 0) {
 		goto fail;
 	}
@@ -162,8 +170,6 @@ char *save_png(const char *dir, const uint8_t *data, size_t len) {
 	if (!localtime_r(&now, &tm)) {
 		goto fail;
 	}
-	char proc[32];
-	snprintf(proc, sizeof(proc), "/proc/self/fd/%d", fd);
 	char name[64];
 	for (int tries = 0; tries < 8; tries++) {
 		uint16_t r;
@@ -178,9 +184,24 @@ char *save_png(const char *dir, const uint8_t *data, size_t len) {
 		if (!path) {
 			goto out; // reported
 		}
+#ifdef O_TMPFILE
+		char proc[32];
+		snprintf(proc, sizeof(proc), "/proc/self/fd/%d", fd);
 		// AT_EMPTY_PATH would need CAP_DAC_READ_SEARCH
-		if (linkat(AT_FDCWD, proc, dirfd, name, AT_SYMLINK_FOLLOW) ==
-			0) {
+		int placed =
+			linkat(AT_FDCWD, proc, dirfd, name, AT_SYMLINK_FOLLOW);
+#else
+		int placed =
+			renameat2(dirfd, tmp, dirfd, name, AT_RENAME_NOREPLACE);
+		if (placed < 0 && errno == EOPNOTSUPP) {
+			log_error("cannot save screenshot in %s: its file "
+				  "system cannot rename without replacing, "
+				  "pass a --dir on another one",
+				dir);
+			goto out;
+		}
+#endif
+		if (placed == 0) {
 			close(fd);
 			close(dirfd);
 			return path;
@@ -198,6 +219,9 @@ out:
 	free(path);
 	if (fd >= 0) {
 		close(fd);
+#ifndef O_TMPFILE
+		unlinkat(dirfd, tmp, 0);
+#endif
 	}
 	close(dirfd);
 	return NULL;

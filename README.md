@@ -62,6 +62,15 @@ Add the flake to your inputs and its overlay to nixpkgs:
 
 Then add `pkgs.sweetshot` to your packages.
 
+### FreeBSD
+
+Build from source (below) after installing the build tools; zlib and the
+compiler are in base:
+
+```bash
+pkg install meson ninja pkgconf wayland wayland-protocols
+```
+
 ### From source
 
 Needs meson, wayland, wayland-protocols and zlib:
@@ -90,8 +99,11 @@ sweetshot window   # focused window
 The saved path is printed on stdout. Exit status: 0 done, 1 failed (also
 partly), 2 usage error or unknown output, 3 cancelled.
 
-Files are never overwritten or left half-written. This needs `O_TMPFILE`
-(ext4, btrfs, xfs, tmpfs); vfat, exFAT and most FUSE mounts are refused.
+Files are never overwritten or left half-written. On Linux this needs
+`O_TMPFILE` (ext4, btrfs, xfs, tmpfs); vfat, exFAT and most FUSE mounts are
+refused. On FreeBSD (ZFS, UFS, tmpfs, msdosfs) the file is written under a
+hidden `.sweetshot-*.tmp` name and renamed when complete; a crash in between
+can leave that file behind. On FAT the mount sets the file's permissions.
 
 ### Region selector
 
@@ -144,6 +156,9 @@ sweets.permission({
     mode = "allow",
 })
 ```
+
+On FreeBSD, Sweets refuses `program` rules, so sweetshot cannot capture
+with `enforce = true` there.
 
 Notifications: wrap the binding (a cancel shows nothing):
 

@@ -1,5 +1,6 @@
 #include "edit.h"
 
+#include "evdev.h"
 #include "hud.h"
 #include "input.h"
 #include "log.h"
@@ -9,7 +10,6 @@
 #include "viewporter-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
-#include <linux/input-event-codes.h>
 #include <math.h>
 #include <stdlib.h>
 #include <sys/mman.h>
