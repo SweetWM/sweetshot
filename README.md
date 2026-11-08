@@ -9,6 +9,13 @@
 
 Small screenshot tool for Sweets Wayland compositor
 
+<a href="https://github.com/user-attachments/assets/3b523594-dc4e-428e-8564-a619148973ee" target="_blank">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/4ecc138f-9eaf-4b3a-ae46-2fa093be5109" />
+    <img alt="veila-preview2" src="https://github.com/user-attachments/assets/4ecc138f-9eaf-4b3a-ae46-2fa093be5109" />
+  </picture>
+</a>
+
 </div>
 
 ## 🔥 Features
