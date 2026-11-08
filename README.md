@@ -34,6 +34,8 @@ yay -S sweetshot-bin
 yay -S sweetshot-git
 ```
 
+---
+
 ### NixOS
 
 Add the flake to your inputs and its overlay to nixpkgs:
@@ -62,6 +64,8 @@ Add the flake to your inputs and its overlay to nixpkgs:
 
 Then add `pkgs.sweetshot` to your packages.
 
+---
+
 ### FreeBSD
 
 Build from source (below) after installing the build tools; zlib and the
@@ -81,6 +85,8 @@ meson compile -C build
 sudo meson install -C build
 ```
 
+---
+
 ## Usage
 
 ```bash
@@ -96,14 +102,7 @@ sweetshot window   # focused window
 | `--cursor` | include the pointer |
 | `--edit` | mark up the shot first |
 
-The saved path is printed on stdout. Exit status: 0 done, 1 failed (also
-partly), 2 usage error or unknown output, 3 cancelled.
-
-Files are never overwritten or left half-written. On Linux this needs
-`O_TMPFILE` (ext4, btrfs, xfs, tmpfs); vfat, exFAT and most FUSE mounts are
-refused. On FreeBSD (ZFS, UFS, tmpfs, msdosfs) the file is written under a
-hidden `.sweetshot-*.tmp` name and renamed when complete; a crash in between
-can leave that file behind. On FAT the mount sets the file's permissions.
+---
 
 ### Region selector
 
@@ -118,6 +117,8 @@ The screen freezes while you select, so menus and tooltips stay in the shot.
 | Tab | next output |
 | P | show or hide the pointer |
 | Enter / Esc | capture / cancel |
+
+---
 
 ### Editor (`--edit`)
 
@@ -135,6 +136,8 @@ keys; Tab hides it. Keys are physical positions (US layout):
 | Shift while drawing | 45° lines, squares, circles |
 | Right button while drawing | drop the shape |
 | Ctrl+Z / Ctrl+Shift+Z, Ctrl+Y | undo / redo |
+
+---
 
 ## Sweets config
 
