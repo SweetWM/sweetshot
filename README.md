@@ -30,6 +30,11 @@ Small screenshot tool for [Sweets](https://github.com/sweetwm/Sweets) Wayland co
 - Saves a PNG and copies it to the clipboard
 - One small C binary, no helper tools (no grim, slurp or wl-copy)
 
+> [!IMPORTANT]
+> Built for Sweets compositor. `region` may work on other compositors
+> that offer ext-image-copy-capture and layer-shell. `window` and
+> auto-detecting the focused output need Sweets.
+
 ## Install
 
 ### Arch Linux
