@@ -15,6 +15,16 @@ enum {
 	RECT_DIMS = 4,
 	RECT_PARTS = 8,
 	RECT_CLICK_SLOP = 3,
+	RECT_GRAB_OUT = 8,
+	RECT_GRAB_IN = 4,
+};
+
+// edges of a rectangle, or'ed together; a corner is two
+enum {
+	RECT_LEFT = 1,
+	RECT_RIGHT = 2,
+	RECT_TOP = 4,
+	RECT_BOTTOM = 8,
 };
 
 int32_t rect_clamp(int32_t v, int32_t lo, int32_t hi);
@@ -26,6 +36,11 @@ void rect_layout(
 
 struct rect rect_nudge(struct rect r, int32_t dx, int32_t dy, bool resize,
 	int32_t w, int32_t h);
+
+uint32_t rect_grab(struct rect sel, int32_t x, int32_t y);
+
+struct rect rect_resize(struct rect from, uint32_t edges, int32_t dx,
+	int32_t dy, int32_t w, int32_t h);
 
 // normalized rectangle between two points, reverse drags included
 struct rect rect_span(int32_t ax, int32_t ay, int32_t bx, int32_t by);

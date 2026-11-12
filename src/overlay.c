@@ -2,9 +2,11 @@
 
 #include "log.h"
 #include "single-pixel-buffer-v1-client-protocol.h"
+#include "sprite.h"
 #include "viewporter-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
+#include <math.h>
 #include <stdlib.h>
 
 void overlay_map(struct zwlr_layer_surface_v1 *layer,
@@ -126,4 +128,95 @@ void catchers_destroy(struct catchers *all) {
 		wl_buffer_destroy(all->clear);
 	}
 	free(all);
+}
+
+enum {
+	HANDLE = 11,
+	HANDLES = 4,
+};
+
+struct handles {
+	struct sprite *dots[HANDLES];
+	double scale; // the dots are drawn for, 0 before
+};
+
+struct handles *handles_create(
+	struct conn *c, struct wl_surface *parent, struct wl_region *no_input) {
+	struct handles *h = calloc(1, sizeof(*h));
+	if (!h) {
+		log_error("out of memory");
+		return NULL;
+	}
+	for (int i = 0; i < HANDLES; i++) {
+		// reports its own error
+		h->dots[i] = sprite_create(c, parent, no_input);
+		if (!h->dots[i]) {
+			handles_destroy(h);
+			return NULL;
+		}
+	}
+	return h;
+}
+
+// drawn at the output's own scale, so they stay sharp at 1.5
+static bool draw(struct handles *h, double scale) {
+	long n = lround(HANDLE * scale);
+	uint32_t px = n < 1 ? 1 : (uint32_t)n;
+	float k = (float)px / HANDLE;
+	struct raster_point c = {(float)px / 2.0f, (float)px / 2.0f};
+	// a dark ring keeps the dot visible over white
+	const struct draw_op ops[] = {
+		{.kind = DRAW_LINE,
+			.color = 0,
+			.width = 10 * k,
+			.a = c,
+			.b = c},
+		{.kind = DRAW_LINE,
+			.color = 0xffffff,
+			.width = 8 * k,
+			.a = c,
+			.b = c},
+	};
+	for (int i = 0; i < HANDLES; i++) {
+		if (!sprite_draw(h->dots[i], HANDLE, HANDLE, px, px, 0, ops,
+			    sizeof(ops) / sizeof(ops[0]))) {
+			return false;
+		}
+	}
+	h->scale = scale;
+	return true;
+}
+
+bool handles_update(struct handles *h, const struct rect *sel, int32_t lw,
+	int32_t lh, double scale) {
+	if (sel && scale != h->scale && !draw(h, scale)) {
+		return false;
+	}
+	for (int i = 0; i < HANDLES; i++) {
+		int32_t x = 0;
+		int32_t y = 0;
+		if (sel) {
+			x = i & 1 ? sel->x + sel->w - 1 : sel->x;
+			y = i & 2 ? sel->y + sel->h - 1 : sel->y;
+		}
+		// pulled inward at the output's edges, so they stay on screen
+		sprite_move(h->dots[i],
+			rect_clamp(x - HANDLE / 2, 0, lw - HANDLE),
+			rect_clamp(y - HANDLE / 2, 0, lh - HANDLE),
+			sel != NULL);
+		if (sprite_dirty(h->dots[i])) {
+			sprite_apply(h->dots[i]);
+		}
+	}
+	return true;
+}
+
+void handles_destroy(struct handles *h) {
+	if (!h) {
+		return;
+	}
+	for (int i = HANDLES; i > 0; i--) {
+		sprite_destroy(h->dots[i - 1]);
+	}
+	free(h);
 }
