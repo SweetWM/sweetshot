@@ -23,7 +23,8 @@ Small screenshot tool for [Sweets](https://github.com/sweetwm/Sweets) Wayland co
 ## 🔥 Features
 
 - Region, output and window screenshots
-- Region selector over a frozen screen, mouse or keyboard
+- Region selector over a frozen screen: draw, move and resize the
+  selection by mouse (corner handles, edges) or keyboard
 - Window shots without borders, transparency kept
 - Mark up a shot before saving it (`--edit`)
 - Saves a PNG and copies it to the clipboard

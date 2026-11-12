@@ -34,6 +34,7 @@ struct overlay {
 	struct zwlr_layer_surface_v1 *layer;
 	struct part parts[RECT_PARTS];
 	int n_parts;
+	struct handles *handles; // above the outline
 	int32_t w; // logical size from configure, 0 until the first
 	int32_t h;
 	bool dirty;
@@ -66,6 +67,7 @@ struct selector {
 	int32_t drag_x;
 	int32_t drag_y;
 	bool moving;		     // the drag moves sel
+	uint32_t grab;		     // or resizes it by these RECT_ edges
 	struct overlay *drag_from_o; // the selection at the press
 	struct rect drag_from;
 	bool cursor;
@@ -95,6 +97,13 @@ static struct wl_buffer *wanted(const struct overlay *o) {
 	const struct shot *a = o->sel->cursor ? o->pointer : o->plain;
 	const struct shot *b = o->sel->cursor ? o->plain : o->pointer;
 	return a->buffer ? a->buffer : b->buffer;
+}
+
+// output pixels per logical pixel
+static double scale(const struct overlay *o) {
+	const struct output *out = o->out;
+	int32_t pw = out->transform & 1 ? out->mode_h : out->mode_w;
+	return pw > 0 ? (double)pw / o->w : 1.0;
 }
 
 static void apply(struct overlay *o) {
@@ -138,6 +147,12 @@ static void apply(struct overlay *o) {
 			p->mapped = false;
 		}
 	}
+	bool has = s->sel_o == o && s->sel.w > 0 && s->sel.h > 0;
+	if (!handles_update(
+		    o->handles, has ? &s->sel : NULL, o->w, o->h, scale(o))) {
+		s->state = FAILED;
+		return;
+	}
 	o->dirty = false;
 	request_frame(o);
 	// subsurfaces are synchronized: everything above lands in this commit
@@ -167,10 +182,28 @@ static bool over_sel(const struct selector *s) {
 	return s->hover == o && inside(s->sel, s->px, s->py);
 }
 
-// a new selection's own corner is under the pointer, it is not a move
+static uint32_t grab_at(const struct selector *s) {
+	return s->hover && s->hover == s->sel_o
+		       ? rect_grab(s->sel, s->px, s->py)
+		       : 0;
+}
+
+// a new selection's own corner is under the pointer, it is not a move or
+// a resize
 static void update_cursor(struct selector *s) {
-	bool move = s->moving || (!s->drag_o && over_sel(s));
-	input_set_cursor(s->input, move ? INPUT_MOVE : INPUT_CROSSHAIR);
+	uint32_t g = s->drag_o ? s->grab : grab_at(s);
+	bool x = g & (RECT_LEFT | RECT_RIGHT);
+	bool y = g & (RECT_TOP | RECT_BOTTOM);
+	enum input_cursor c = INPUT_CROSSHAIR;
+	if (x && y) {
+		c = !(g & RECT_LEFT) == !(g & RECT_TOP) ? INPUT_RESIZE_NWSE
+							: INPUT_RESIZE_NESW;
+	} else if (g) {
+		c = x ? INPUT_RESIZE_EW : INPUT_RESIZE_NS;
+	} else if (s->moving || (!s->drag_o && over_sel(s))) {
+		c = INPUT_MOVE;
+	}
+	input_set_cursor(s->input, c);
 }
 
 static void set_sel(struct selector *s, struct overlay *o, struct rect r) {
@@ -269,6 +302,12 @@ static void on_motion(void *data, wl_fixed_t x, wl_fixed_t y) {
 	}
 	// from the press, so an edge stops the selection without the pointer
 	// drifting off it
+	if (s->grab) {
+		set_sel(s, o,
+			rect_resize(s->drag_from, s->grab, s->px - s->drag_x,
+				s->py - s->drag_y, o->w, o->h));
+		return;
+	}
 	if (s->moving) {
 		set_sel(s, o,
 			rect_nudge(s->drag_from, s->px - s->drag_x,
@@ -290,13 +329,15 @@ static void on_button(void *data, uint32_t button, bool pressed) {
 		if (!o || o->w == 0) {
 			return;
 		}
-		s->moving = over_sel(s);
+		// an edge's grab zone reaches into the selection
+		s->grab = grab_at(s);
+		s->moving = !s->grab && over_sel(s);
 		s->drag_from_o = s->sel.w > 0 && s->sel.h > 0 ? s->sel_o : NULL;
 		s->drag_from = s->sel;
 		s->drag_o = o;
 		s->drag_x = rect_clamp(s->px, 0, o->w);
 		s->drag_y = rect_clamp(s->py, 0, o->h);
-		if (!s->moving) {
+		if (!s->moving && !s->grab) {
 			set_sel(s, o,
 				(struct rect){s->drag_x, s->drag_y, 0, 0});
 		}
@@ -304,13 +345,16 @@ static void on_button(void *data, uint32_t button, bool pressed) {
 		o = s->drag_o;
 		s->drag_o = NULL;
 		s->moving = false;
+		uint32_t grab = s->grab;
+		s->grab = 0;
 		if (abs(s->px - s->drag_x) < RECT_CLICK_SLOP &&
 			abs(s->py - s->drag_y) < RECT_CLICK_SLOP) {
 			struct overlay *from = s->drag_from_o;
 			if (!from) {
 				set_sel(s, o, whole(o));
-			} else if (from == o &&
-				   inside(s->drag_from, s->drag_x, s->drag_y)) {
+			} else if (grab ||
+				   (from == o && inside(s->drag_from, s->drag_x,
+							 s->drag_y))) {
 				set_sel(s, o, s->drag_from);
 			} else {
 				set_sel(s, NULL, (struct rect){0});
@@ -415,6 +459,8 @@ static void destroy_overlay(struct overlay *o) {
 		wl_callback_destroy(o->frame);
 	}
 	o->frame = NULL;
+	handles_destroy(o->handles);
+	o->handles = NULL;
 	destroy_parts(o);
 	if (o->layer) {
 		zwlr_layer_surface_v1_destroy(o->layer);
@@ -430,8 +476,8 @@ static void destroy_overlay(struct overlay *o) {
 	o->surface = NULL;
 }
 
-// fills the next overlay; on failure the selector's destroy cleans up
-// whatever was made
+// fills the next overlay, reports its own error, on failure the selector's
+// destroy cleans up whatever was made
 static bool add_overlay(struct selector *s, const struct output *out,
 	struct shot *plain, struct shot *pointer) {
 	struct conn *c = s->conn;
@@ -446,34 +492,43 @@ static bool add_overlay(struct selector *s, const struct output *out,
 	s->n++;
 	o->surface = wl_compositor_create_surface(c->compositor);
 	if (!o->surface) {
-		return false;
+		goto oom;
 	}
 	o->viewport = wp_viewporter_get_viewport(c->viewporter, o->surface);
 	o->layer = zwlr_layer_shell_v1_get_layer_surface(c->layer_shell,
 		o->surface, out->wl, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
 		"sweetshot");
 	if (!o->viewport || !o->layer) {
-		return false;
+		goto oom;
 	}
 	for (int i = 0; i < RECT_PARTS; i++) {
 		struct part *p = &o->parts[o->n_parts++];
 		p->surface = wl_compositor_create_surface(c->compositor);
 		if (!p->surface) {
-			return false;
+			goto oom;
 		}
 		p->sub = wl_subcompositor_get_subsurface(
 			c->subcompositor, p->surface, o->surface);
 		p->viewport =
 			wp_viewporter_get_viewport(c->viewporter, p->surface);
 		if (!p->sub || !p->viewport) {
-			return false;
+			goto oom;
 		}
 		// pointer input always lands on the parent, in its coordinates
 		wl_surface_set_input_region(p->surface, s->no_input);
 	}
+	// reports its own error
+	o->handles = handles_create(c, o->surface, s->no_input);
+	if (!o->handles) {
+		return false;
+	}
 
 	overlay_map(o->layer, o->surface, &layer_listener, o);
 	return true;
+
+oom:
+	log_error("out of memory");
+	return false;
 }
 
 struct selector *select_create(struct conn *c, bool cursor, struct capture *cap,
@@ -503,6 +558,7 @@ struct selector *select_create(struct conn *c, bool cursor, struct capture *cap,
 		sp, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX);
 	s->no_input = wl_compositor_create_region(c->compositor);
 	if (!s->overlays || !s->dim || !s->white || !s->no_input) {
+		log_error("out of memory");
 		goto fail;
 	}
 	struct output *out;
@@ -515,7 +571,6 @@ struct selector *select_create(struct conn *c, bool cursor, struct capture *cap,
 	return s;
 
 fail:
-	log_error("out of memory");
 	select_destroy(s);
 	return NULL;
 }

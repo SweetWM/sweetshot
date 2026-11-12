@@ -50,6 +50,48 @@ struct rect rect_span(int32_t ax, int32_t ay, int32_t bx, int32_t by) {
 	};
 }
 
+// a thin side keeps a third of itself for the inside
+static uint32_t grab_axis(
+	int32_t v, int32_t lo, int32_t len, uint32_t low, uint32_t high) {
+	int32_t in = len / 3 < RECT_GRAB_IN ? len / 3 : RECT_GRAB_IN;
+	if (v < lo + in) {
+		return low;
+	}
+	return v >= lo + len - in ? high : 0;
+}
+
+uint32_t rect_grab(struct rect sel, int32_t x, int32_t y) {
+	if (sel.w <= 0 || sel.h <= 0 || x < sel.x - RECT_GRAB_OUT ||
+		x >= sel.x + sel.w + RECT_GRAB_OUT ||
+		y < sel.y - RECT_GRAB_OUT ||
+		y >= sel.y + sel.h + RECT_GRAB_OUT) {
+		return 0;
+	}
+	return grab_axis(x, sel.x, sel.w, RECT_LEFT, RECT_RIGHT) |
+	       grab_axis(y, sel.y, sel.h, RECT_TOP, RECT_BOTTOM);
+}
+
+struct rect rect_resize(struct rect from, uint32_t edges, int32_t dx,
+	int32_t dy, int32_t w, int32_t h) {
+	int32_t x0 = from.x;
+	int32_t y0 = from.y;
+	int32_t x1 = from.x + from.w;
+	int32_t y1 = from.y + from.h;
+	if (edges & RECT_LEFT) {
+		x0 = rect_clamp(x0 + dx, 0, w);
+	}
+	if (edges & RECT_RIGHT) {
+		x1 = rect_clamp(x1 + dx, 0, w);
+	}
+	if (edges & RECT_TOP) {
+		y0 = rect_clamp(y0 + dy, 0, h);
+	}
+	if (edges & RECT_BOTTOM) {
+		y1 = rect_clamp(y1 + dy, 0, h);
+	}
+	return rect_span(x0, y0, x1, y1);
+}
+
 struct rect rect_intersect(struct rect a, struct rect b) {
 	int64_t x0 = a.x > b.x ? a.x : b.x;
 	int64_t y0 = a.y > b.y ? a.y : b.y;

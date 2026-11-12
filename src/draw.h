@@ -29,8 +29,6 @@ extern const float draw_sizes[DRAW_SIZES];
 struct draw_op {
 	enum draw_kind kind;
 	uint32_t color; // straight sRGB 0xRRGGBB
-	// stroke width; badge diameter, pixelate block and arrow head length
-	// are 6×, 4× and 4× this
 	float width;
 	bool fill;		  // rect and ellipse
 	struct raster_point a;	  // drag start, badge centre

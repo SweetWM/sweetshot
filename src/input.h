@@ -29,6 +29,10 @@ enum input_cursor {
 	INPUT_CROSSHAIR, // set on every pointer enter
 	INPUT_DEFAULT,
 	INPUT_MOVE,
+	INPUT_RESIZE_EW,
+	INPUT_RESIZE_NS,
+	INPUT_RESIZE_NWSE,
+	INPUT_RESIZE_NESW,
 };
 
 struct input;
